@@ -64,7 +64,15 @@ module gpu_controller(
     output reg core_clr,
     output reg core_set_pc_req,
     output reg [data_width - 1:0] core_set_pc_addr,
-    input core_halt
+    input core_halt,
+
+    //SENALES DEL CORE 222!!!
+    output reg core2_ena,
+    output reg core2_clr,
+    output reg core2_set_pc_req,
+    output reg [data_width - 1:0] core2_set_pc_addr,
+    input core2_halt
+    //SENALES DEL CORE 222!!!
 );
     parameter MAX_PARAMS = 20;
 
@@ -124,6 +132,13 @@ module gpu_controller(
     reg n_core_set_pc_req;
     reg [data_width - 1:0] n_core_set_pc_addr;
 
+    //IMITANDO SENALES PARA EL CORE 2
+    reg n_core2_ena;
+    reg n_core2_clr;
+    reg n_core2_set_pc_req;
+    reg [data_width - 1:0] n_core2_set_pc_addr;
+    //IMITANDO SENALES PARA EL CORE 2
+
     reg [31:0] n_out_data;
     reg n_cpu_out_ack;
     // reg n_cpu_kernel_finished;
@@ -175,6 +190,13 @@ module gpu_controller(
         n_core_clr = 0;
         n_core_set_pc_req = 0;
         n_core_set_pc_addr = '0;
+
+        //IMITANDO SENALES PARA EL CORE 2
+        n_core2_ena = 0;
+        n_core2_clr = 0;
+        n_core2_set_pc_req = 0;
+        n_core2_set_pc_addr = '0;
+        //IMITANDO SENALES PARA EL CORE 2
 
         for(int i = 0; i < MAX_PARAMS; i++) begin
             n_params[i] = params[i];
@@ -272,15 +294,20 @@ module gpu_controller(
                     // n_core_ena = 1;
                     n_core_set_pc_req = 1;
                     n_core_set_pc_addr = params[0];
+                    n_core2_set_pc_req = 1;
+                    n_core2_set_pc_addr = params[0];
                     n_state = STATE_KERNEL_LAUNCH2;
                 end
                 STATE_KERNEL_LAUNCH2: begin
                     // $display("gpu_controller state STATE_KERNEL_LAUNCH2");
                     n_core_ena = 1;
-                    if(core_halt) begin
+                    n_core2_ena = 1;
+                    if(core_halt && core2_halt) begin
                         // $display("gpu_controller state STATE_KERNEL_LAUNCH2 got HALT");
                         n_core_ena = 0;
                         n_core_clr = 1;
+                        n_core2_ena = 0;
+                        n_core2_clr = 1;
                         n_state = STATE_IDLE;
                         n_cpu_out_ack = 1;
                     end
@@ -367,6 +394,13 @@ module gpu_controller(
             core_set_pc_req <= 0;
             core_set_pc_addr <= '0;
 
+            //IMITANDO PARA CORE 2!!!
+            core2_ena <= 0;
+            core2_clr <= 0;
+            core2_set_pc_req <= 0;
+            core2_set_pc_addr <= '0;
+            //IMITANDO PARA CORE 2!!!
+
             cpu_out_ack = 0;
             // cpu_kernel_finished = 0;
 
@@ -398,6 +432,13 @@ module gpu_controller(
             core_clr <= n_core_clr;
             core_set_pc_req <= n_core_set_pc_req;
             core_set_pc_addr <= n_core_set_pc_addr;
+
+            //IMITANDO COMPORTAMIENTO CORE 2
+            core2_ena <= n_core2_ena;
+            core2_clr <= n_core2_clr;
+            core2_set_pc_req <= n_core2_set_pc_req;
+            core2_set_pc_addr <= n_core2_set_pc_addr;
+            //IMITANDO COMPORTAMIENTO CORE 2
 
             cpu_out_ack = n_cpu_out_ack;
             // cpu_kernel_finished = n_cpu_kernel_finished;

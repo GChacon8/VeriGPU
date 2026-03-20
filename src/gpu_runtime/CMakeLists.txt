@@ -64,6 +64,7 @@ verilate(verigpu_runtime
         ${SRC}/gpu_card.sv
     TOP_MODULE gpu_card
     PREFIX gpu_card
+    VERILATOR_ARGS -Wno-IMPLICITSTATIC -Wno-fatal
 )
 if(LINUX)
     target_link_libraries(verigpu_runtime PRIVATE)

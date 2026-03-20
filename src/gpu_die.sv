@@ -51,6 +51,26 @@ module gpu_die(
 
     reg core1_halt;
 
+    //SENALES DEL CORE 2 !!!
+    wire core2_mem_rd_req;
+    wire core2_mem_wr_req;
+
+    wire [addr_width - 1:0] core2_mem_addr;
+    wire [data_width - 1:0] core2_mem_rd_data;
+    wire [data_width - 1:0] core2_mem_wr_data;
+
+    wire core2_mem_busy;
+    wire core2_mem_ack;
+
+    wire contr_core2_ena;
+    wire contr_core2_clr;
+    wire contr_core2_set_pc_req;
+    wire [data_width - 1:0] contr_core2_set_pc_addr;
+    wire contr_core2_halt;
+
+    reg core2_halt;
+    //SENALES DEL CORE 2 !!!
+
     global_mem_controller global_mem_controller_(
         .clk(clk),
         .rst(rst),
@@ -63,6 +83,14 @@ module gpu_die(
         .core1_wr_data(core1_mem_wr_data),
         .core1_busy(core1_mem_busy),
         .core1_ack(core1_mem_ack),
+
+        .core2_addr(core2_mem_addr),
+        .core2_wr_req(core2_mem_wr_req),
+        .core2_rd_req(core2_mem_rd_req),
+        .core2_rd_data(core2_mem_rd_data),
+        .core2_wr_data(core2_mem_wr_data),
+        .core2_busy(core2_mem_busy),
+        .core2_ack(core2_mem_ack),
 
         .contr_wr_en(contr_mem_wr_en),
         .contr_rd_en(contr_mem_rd_en),
@@ -102,6 +130,31 @@ module gpu_die(
         .mem_wr_req(core1_mem_wr_req)
     );
 
+    //INSTANCIA DEL CORE 2 !!!
+    core core2(
+        .rst(rst),
+        .clk(clk),
+        .clr(contr_core2_clr),
+        .ena(contr_core2_ena),
+        .set_pc_req(contr_core2_set_pc_req),
+        .set_pc_addr(contr_core2_set_pc_addr),
+
+        .outflen(outflen),
+        .out(out),
+        .outen(outen),
+
+        .halt(contr_core2_halt),
+
+        .mem_addr(core2_mem_addr),
+        .mem_rd_data(core2_mem_rd_data),
+        .mem_wr_data(core2_mem_wr_data),
+        .mem_ack(core2_mem_ack),
+        .mem_busy(core2_mem_busy),
+        .mem_rd_req(core2_mem_rd_req),
+        .mem_wr_req(core2_mem_wr_req)
+    );
+    //INSTANCIA DEL CORE 2 !!!
+
     gpu_controller gpu_controller_(
         .rst(rst),
         .clk(clk),
@@ -123,6 +176,12 @@ module gpu_die(
         .core_clr(contr_core1_clr),
         .core_halt(contr_core1_halt),
         .core_set_pc_req(contr_core1_set_pc_req),
-        .core_set_pc_addr(contr_core1_set_pc_addr)
+        .core_set_pc_addr(contr_core1_set_pc_addr),
+
+        .core2_ena(contr_core2_ena),
+        .core2_clr(contr_core2_clr),
+        .core2_halt(contr_core2_halt),
+        .core2_set_pc_req(contr_core2_set_pc_req),
+        .core2_set_pc_addr(contr_core2_set_pc_addr)
     );
 endmodule

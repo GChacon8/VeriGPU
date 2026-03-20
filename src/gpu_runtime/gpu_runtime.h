@@ -7,6 +7,7 @@
 // #include <stdlib.h>
 #include <cstdlib>
 #include <ostream>
+#include <stdint.h>
 
 #include "kernel_compile_defs.h"
 
