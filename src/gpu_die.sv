@@ -86,6 +86,7 @@ module gpu_die(
         .ena(contr_core1_ena),
         .set_pc_req(contr_core1_set_pc_req),
         .set_pc_addr(contr_core1_set_pc_addr),
+        .thread_id('0), // single core, thread_id = 0
 
         .outflen(outflen),
         .out(out),

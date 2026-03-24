@@ -15,6 +15,8 @@ module core(
     input set_pc_req,  // requests to change PC; best to do this with ena 0
     input [addr_width - 1:0] set_pc_addr, // new address for PC
 
+    input [data_width - 1:0] thread_id, // thread ID, loaded into x5 (t0) on clr
+
     output reg [data_width - 1:0] out,
     output reg outen,
     output reg outflen,
@@ -826,6 +828,7 @@ module core(
             pc <= 128;
             state <= C0;
             regs[0] <= '0;
+            regs[5] <= thread_id; // t0 = thread_id, available to kernel code
 
             c2_instr <= '0;
 

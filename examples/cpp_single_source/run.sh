@@ -32,7 +32,7 @@ export VERIGPUDIR=${BASEDIR}
 BUILDDIR=build/${BASENAME}
 SRC=$PWD/examples/cpp_single_source
 
-VERILATORDIR=/usr/local/share/verilator
+VERILATORDIR=/usr/share/verilator
 
 if [[ ! -e ${VERIGPUDIR}/build ]]; then {
     mkdir -p ${VERIGPUDIR}/build
