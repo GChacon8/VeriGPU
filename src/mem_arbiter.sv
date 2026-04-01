@@ -18,6 +18,14 @@ Constraint: NUM_CORES must be a power of 2 (1, 2, 4, 8).
 The controller port (contr_*) on global_mem_controller is NOT routed
 through this arbiter — it stays separate, as the controller only
 accesses memory when cores are disabled.
+
+CP-3 FIX: Removed !pending_rd[i] && !pending_wr[i] guards from latch
+conditions. These caused a deadlock when a core received ack and
+immediately sent a new request on the same cycle (standard core behavior
+for single-cycle instructions). The guard evaluated the pre-NBA pending
+value (still 1), rejecting the new request even though the clear NBA
+would set it to 0. Without the guard, the latch NBA (later in code)
+correctly wins over the clear NBA for the same variable.
 */
 
 `default_nettype none
@@ -112,7 +120,6 @@ module mem_arbiter #(
                 found     = 0;
                 found_idx = '0;
                 for (scan_i = 0; scan_i < NUM_CORES; scan_i = scan_i + 1) begin
-                    // GRANT_W-bit truncation gives modulo for power-of-2 NUM_CORES
                     scan_idx = grant + scan_i;
                     if (!found && (pending_rd[scan_idx] || pending_wr[scan_idx])) begin
                         found     = 1;
@@ -139,7 +146,6 @@ module mem_arbiter #(
                     core_ack[active_core] = 1;
                     core_rd_data[active_core * data_width +: data_width] = mem_rd_data;
                     do_clear_pending = 1;
-                    // GRANT_W-bit truncation wraps: active_core+1 mod NUM_CORES
                     n_grant = active_core + 1;
                     n_state = ARB_IDLE;
                 end
@@ -176,12 +182,16 @@ module mem_arbiter #(
             end
 
             // Latch new requests SECOND.
+            // FIX: No guard on !pending_rd/wr. A core only sends a new
+            // request after receiving ack (it's blocked in C1/C2 until then).
+            // The only overlap is: clear + new request on the same cycle.
+            // Since this NBA comes after the clear NBA, it wins correctly.
             for (i = 0; i < NUM_CORES; i = i + 1) begin
-                if (core_rd_req[i] && !pending_rd[i] && !pending_wr[i]) begin
+                if (core_rd_req[i]) begin
                     pending_rd[i]    <= 1;
                     pending_addr[i]  <= core_addr[i * addr_width +: addr_width];
                 end
-                if (core_wr_req[i] && !pending_rd[i] && !pending_wr[i]) begin
+                if (core_wr_req[i]) begin
                     pending_wr[i]    <= 1;
                     pending_addr[i]  <= core_addr[i * addr_width +: addr_width];
                     pending_wdata[i] <= core_wr_data[i * data_width +: data_width];
