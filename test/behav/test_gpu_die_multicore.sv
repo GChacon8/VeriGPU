@@ -1,21 +1,11 @@
 /*
 test_gpu_die_multicore.sv
 
-CP-4+5 test: exercises the full gpu_die stack with compute_unit.
-Replicates the exact protocol used by gpu_runtime.cpp:
-  - gpuCopyToDevice  → INSTR_COPY_TO_GPU
-  - gpuLaunchKernel  → INSTR_KERNEL_LAUNCH
-  - gpuCopyFromDevice → INSTR_COPY_FROM_GPU
+CP-4+5+6 test: exercises the full gpu_die stack.
 
-This is the first test that proves the complete chain works:
-  host protocol → gpu_controller → compute_unit(4 cores) → memory
-
-The test program (same as CP-3):
-  slli x6, x5, 2      ; x6 = tid * 4
-  sw   x5, 0(x6)       ; mem[tid*4] = tid
-  lui  x7, 0xF4        ; x7 = 0xF4000
-  addi x7, x7, 0x244   ; x7 = 0xF4244
-  sw   x0, 0(x7)        ; halt
+Tests 1-3: from CP-4+5 (single batch)
+Test 4: CP-6 batching — 8 threads in 2 batches of 4
+Test 5: CP-6 batching — 12 threads in 3 batches of 4
 */
 
 module test_gpu_die_multicore();
@@ -48,16 +38,26 @@ module test_gpu_die_multicore();
     endtask
 
     // Protocol constants (matching gpu_runtime.cpp)
-    localparam INSTR_NOP            = 0;
-    localparam INSTR_COPY_TO_GPU    = 1;
-    localparam INSTR_COPY_FROM_GPU  = 2;
-    localparam INSTR_KERNEL_LAUNCH  = 3;
+    localparam INSTR_NOP              = 0;
+    localparam INSTR_COPY_TO_GPU      = 1;
+    localparam INSTR_COPY_FROM_GPU    = 2;
+    localparam INSTR_KERNEL_LAUNCH    = 3;
+    localparam INSTR_SET_THREAD_BASE  = 4;  // NEW for CP-6
 
     // -------------------------------------------------------
-    // gpu_copy_to_device: replicates gpuCopyToDevice()
-    //   Sends COPY_TO_GPU instruction, dest addr, size, then data words.
-    //   Uses blocking assignments (=) for protocol signals, matching
-    //   the C++ runtime's direct assignment before eval().
+    // gpu_set_base_thread_id: NEW for CP-6
+    // -------------------------------------------------------
+    task gpu_set_base_thread_id(input [31:0] base);
+        cpu_recv_instr = INSTR_SET_THREAD_BASE;
+        tick();
+        cpu_in_data = base;
+        tick();
+        cpu_recv_instr = INSTR_NOP;
+        tick();
+    endtask
+
+    // -------------------------------------------------------
+    // gpu_copy_to_device
     // -------------------------------------------------------
     task gpu_copy_to_device(
         input [31:0] dest_addr,
@@ -68,19 +68,15 @@ module test_gpu_die_multicore();
     );
         integer i;
         reg [31:0] words [0:4];
-
         words[0] = data0; words[1] = data1; words[2] = data2;
         words[3] = data3; words[4] = data4;
 
         cpu_recv_instr = INSTR_COPY_TO_GPU;
         tick();
-
         cpu_in_data = dest_addr;
         tick();
-
-        cpu_in_data = num_words * 4; // size in bytes
+        cpu_in_data = num_words * 4;
         tick();
-
         cpu_recv_instr = INSTR_NOP;
         for (i = 0; i < num_words; i = i + 1) begin
             cpu_in_data = words[i];
@@ -89,26 +85,19 @@ module test_gpu_die_multicore();
     endtask
 
     // -------------------------------------------------------
-    // gpu_launch_kernel: replicates gpuLaunchKernel()
-    //   Sends KERNEL_LAUNCH with kernel address and 0 params.
-    //   Waits for cpu_out_ack (kernel finished).
+    // gpu_launch_kernel
     // -------------------------------------------------------
     task gpu_launch_kernel(input [31:0] kernel_addr);
-        integer done;
-        integer cycle_count;
+        integer done, cycle_count;
 
         cpu_recv_instr = INSTR_KERNEL_LAUNCH;
         tick();
-
         cpu_in_data = kernel_addr;
         tick();
-
-        cpu_in_data = 0; // num kernel params = 0
+        cpu_in_data = 0;
         tick();
-
         cpu_recv_instr = INSTR_NOP;
 
-        // Wait for ack (kernel finished)
         done = 0;
         for (cycle_count = 0; cycle_count < 10000 && !done; cycle_count = cycle_count + 1) begin
             tick();
@@ -117,7 +106,6 @@ module test_gpu_die_multicore();
                 $display("  kernel finished after ~%0d cycles", cycle_count);
             end
         end
-
         if (!done) begin
             $display("FAIL: kernel launch timeout");
             $finish;
@@ -125,26 +113,19 @@ module test_gpu_die_multicore();
     endtask
 
     // -------------------------------------------------------
-    // gpu_copy_from_device: replicates gpuCopyFromDevice()
-    //   Sends COPY_FROM_GPU, src addr, size.
-    //   Reads words back one at a time via cpu_out_ack/cpu_out_data.
+    // gpu_copy_from_device
     // -------------------------------------------------------
     reg [31:0] readback_buf [0:15];
 
     task gpu_copy_from_device(input [31:0] src_addr, input integer num_words);
-        integer i;
-        integer done;
-        integer cycle_count;
+        integer i, cycle_count;
 
         cpu_recv_instr = INSTR_COPY_FROM_GPU;
         tick();
-
         cpu_in_data = src_addr;
         tick();
-
-        cpu_in_data = num_words * 4; // size in bytes
+        cpu_in_data = num_words * 4;
         tick();
-
         cpu_recv_instr = INSTR_NOP;
 
         i = 0;
@@ -155,7 +136,6 @@ module test_gpu_die_multicore();
             end
             tick();
         end
-
         if (i < num_words) begin
             $display("FAIL: copy_from_device timeout (got %0d of %0d words)", i, num_words);
             $finish;
@@ -166,120 +146,153 @@ module test_gpu_die_multicore();
     // Main test sequence
     // -------------------------------------------------------
     integer test_num;
+    integer j;
 
     initial begin
-        clk = 0;
-        rst = 0;
+        clk = 0; rst = 0;
         cpu_recv_instr = INSTR_NOP;
         cpu_in_data = 0;
 
-        // Reset
         tick(); tick();
         rst = 1;
         tick(); tick();
 
         // =======================================================
-        // Test 1: Full cycle — copy program, launch, read results
-        //   4 cores with base_thread_id = 0
-        //   Expect: mem[0]=0, mem[4]=1, mem[8]=2, mem[12]=3
+        // Load the test program at addr 128 (same as CP-3/4/5)
+        //   slli x6, x5, 2    ; x6 = tid * 4
+        //   sw   x5, 0(x6)     ; mem[tid*4] = tid
+        //   lui  x7, 0xF4      ; x7 = 0xF4000
+        //   addi x7, x7, 0x244 ; x7 = 0xF4244
+        //   sw   x0, 0(x7)      ; halt
+        // =======================================================
+        $display("Loading program to address 128...");
+        gpu_copy_to_device(128, 5,
+            32'h00229313, 32'h00532023, 32'h000F43B7,
+            32'h24438393, 32'h0003A023);
+        $display("Program loaded.");
+        $display("");
+
+        // =======================================================
+        // Test 1: Single batch (base=0) — from CP-4+5
         // =======================================================
         test_num = 1;
-        $display("--- Test %0d: Full cycle with 4 cores ---", test_num);
-
-        // Step 1: Copy program to GPU address 128
-        $display("  Copying program to address 128...");
-        gpu_copy_to_device(
-            128,  // dest_addr
-            5,    // num_words (5 instructions)
-            32'h00229313,  // slli x6, x5, 2
-            32'h00532023,  // sw   x5, 0(x6)
-            32'h000F43B7,  // lui  x7, 0xF4
-            32'h24438393,  // addi x7, x7, 0x244
-            32'h0003A023   // sw   x0, 0(x7) — halt
-        );
-        $display("  Program copied.");
-
-        // Step 2: Launch kernel at address 128
-        $display("  Launching kernel...");
+        $display("--- Test %0d: Single batch, base=0 ---", test_num);
+        gpu_set_base_thread_id(0);
         gpu_launch_kernel(128);
-
-        // Step 3: Read back 4 words from address 0
-        $display("  Reading results...");
         gpu_copy_from_device(0, 4);
-
-        // Step 4: Verify
-        $display("  Results: [%0d, %0d, %0d, %0d] (expect [0, 1, 2, 3])",
+        $display("  Results: [%0d, %0d, %0d, %0d] (expect [0,1,2,3])",
             readback_buf[0], readback_buf[1], readback_buf[2], readback_buf[3]);
-
-        if (readback_buf[0] !== 0 || readback_buf[1] !== 1 ||
-            readback_buf[2] !== 2 || readback_buf[3] !== 3) begin
-            $display("FAIL test %0d: unexpected values", test_num);
-            $finish;
+        if (readback_buf[0]!==0 || readback_buf[1]!==1 ||
+            readback_buf[2]!==2 || readback_buf[3]!==3) begin
+            $display("FAIL test %0d", test_num); $finish;
         end
         $display("PASS test %0d", test_num);
         tick(); tick();
 
         // =======================================================
-        // Test 2: Second launch to verify controller returns to IDLE
-        //   Copy a simple "write 42 to addr 200, halt" program
-        //   Single-thread behavior (all 4 cores write same thing)
+        // Test 2: Single batch (base=10) — verify base_thread_id works
         // =======================================================
         test_num = 2;
-        $display("--- Test %0d: Second kernel launch (controller reuse) ---", test_num);
-
-        // Program: li x6, 200; li x7, 42; sw x7, 0(x6); halt
-        // Encoded as:
-        //   addi x6, x0, 200     = 0x0C800313
-        //   addi x7, x0, 42      = 0x02A00393
-        //   sw   x7, 0(x6)       = 0x00732023
-        //   lui  x8, 0xF4        = 0x000F4437
-        //   addi x8, x8, 0x244   = 0x24440413
-        //   sw   x0, 0(x8)       = 0x00042023
-        // That's 6 instructions = 24 bytes. But our copy task only handles 5.
-        // Simpler: reuse the CP-3 program at addr 256, read from different addrs.
-
-        // Actually, let's just re-launch the SAME program at addr 128.
-        // The results at 0-12 get overwritten with the same values (idempotent).
-        $display("  Re-launching same kernel...");
+        $display("--- Test %0d: Single batch, base=10 ---", test_num);
+        gpu_set_base_thread_id(10);
         gpu_launch_kernel(128);
-
-        $display("  Reading results...");
-        gpu_copy_from_device(0, 4);
-
-        $display("  Results: [%0d, %0d, %0d, %0d] (expect [0, 1, 2, 3])",
+        gpu_copy_from_device(40, 4);  // tid*4 = 40,44,48,52
+        $display("  Results: [%0d, %0d, %0d, %0d] (expect [10,11,12,13])",
             readback_buf[0], readback_buf[1], readback_buf[2], readback_buf[3]);
-
-        if (readback_buf[0] !== 0 || readback_buf[1] !== 1 ||
-            readback_buf[2] !== 2 || readback_buf[3] !== 3) begin
-            $display("FAIL test %0d: unexpected values", test_num);
-            $finish;
+        if (readback_buf[0]!==10 || readback_buf[1]!==11 ||
+            readback_buf[2]!==12 || readback_buf[3]!==13) begin
+            $display("FAIL test %0d", test_num); $finish;
         end
         $display("PASS test %0d", test_num);
+        tick(); tick();
 
         // =======================================================
-        // Test 3: Verify test 1 data at addrs 0-12 survived
-        //   (redundant with test 2, but confirms COPY_FROM_GPU works)
+        // Test 3: Controller reuse — re-launch works
         // =======================================================
         test_num = 3;
-        $display("--- Test %0d: Verify data persists after 2 launches ---", test_num);
+        $display("--- Test %0d: Controller reuse (re-launch base=0) ---", test_num);
+        gpu_set_base_thread_id(0);
+        gpu_launch_kernel(128);
         gpu_copy_from_device(0, 4);
+        if (readback_buf[0]!==0 || readback_buf[1]!==1 ||
+            readback_buf[2]!==2 || readback_buf[3]!==3) begin
+            $display("FAIL test %0d", test_num); $finish;
+        end
+        $display("PASS test %0d", test_num);
+        tick(); tick();
 
-        if (readback_buf[0] !== 0 || readback_buf[1] !== 1 ||
-            readback_buf[2] !== 2 || readback_buf[3] !== 3) begin
-            $display("FAIL test %0d", test_num);
-            $finish;
+        // =======================================================
+        // Test 4: BATCHING — 8 threads in 2 batches of 4
+        //   Batch 1: base=0 → threads 0,1,2,3 → write to addrs 0,4,8,12
+        //   Batch 2: base=4 → threads 4,5,6,7 → write to addrs 16,20,24,28
+        //   Read all 8 words and verify
+        // =======================================================
+        test_num = 4;
+        $display("--- Test %0d: BATCHING — 8 threads in 2 batches ---", test_num);
+
+        $display("  Batch 1 (base=0)...");
+        gpu_set_base_thread_id(0);
+        gpu_launch_kernel(128);
+
+        $display("  Batch 2 (base=4)...");
+        gpu_set_base_thread_id(4);
+        gpu_launch_kernel(128);
+
+        $display("  Reading 8 words from addr 0...");
+        gpu_copy_from_device(0, 8);
+        $display("  Results: [%0d, %0d, %0d, %0d, %0d, %0d, %0d, %0d]",
+            readback_buf[0], readback_buf[1], readback_buf[2], readback_buf[3],
+            readback_buf[4], readback_buf[5], readback_buf[6], readback_buf[7]);
+        $display("  Expect:  [0, 1, 2, 3, 4, 5, 6, 7]");
+
+        for (j = 0; j < 8; j = j + 1) begin
+            if (readback_buf[j] !== j) begin
+                $display("FAIL test %0d: readback_buf[%0d] = %0d, expected %0d",
+                    test_num, j, readback_buf[j], j);
+                $finish;
+            end
+        end
+        $display("PASS test %0d", test_num);
+        tick(); tick();
+
+        // =======================================================
+        // Test 5: BATCHING — 12 threads in 3 batches of 4
+        // =======================================================
+        test_num = 5;
+        $display("--- Test %0d: BATCHING — 12 threads in 3 batches ---", test_num);
+
+        gpu_set_base_thread_id(0);
+        gpu_launch_kernel(128);
+
+        gpu_set_base_thread_id(4);
+        gpu_launch_kernel(128);
+
+        gpu_set_base_thread_id(8);
+        gpu_launch_kernel(128);
+
+        gpu_copy_from_device(0, 12);
+        $display("  Results: [%0d,%0d,%0d,%0d, %0d,%0d,%0d,%0d, %0d,%0d,%0d,%0d]",
+            readback_buf[0], readback_buf[1], readback_buf[2], readback_buf[3],
+            readback_buf[4], readback_buf[5], readback_buf[6], readback_buf[7],
+            readback_buf[8], readback_buf[9], readback_buf[10], readback_buf[11]);
+
+        for (j = 0; j < 12; j = j + 1) begin
+            if (readback_buf[j] !== j) begin
+                $display("FAIL test %0d: readback_buf[%0d] = %0d, expected %0d",
+                    test_num, j, readback_buf[j], j);
+                $finish;
+            end
         end
         $display("PASS test %0d", test_num);
 
         // =======================================================
         $display("");
-        $display("ALL 3 TESTS PASSED");
+        $display("ALL 5 TESTS PASSED");
         $finish;
     end
 
-    // Timeout watchdog
     initial begin
-        #1000000;
+        #2000000;
         $display("FAIL: global timeout");
         $finish;
     end

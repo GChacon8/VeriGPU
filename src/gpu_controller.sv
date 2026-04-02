@@ -126,6 +126,9 @@ module gpu_controller(
     reg [data_width - 1:0] n_core_set_pc_addr;
     reg [data_width - 1:0] n_base_thread_id;
 
+    reg [data_width - 1:0] stored_base_thread_id;
+    reg [data_width - 1:0] n_stored_base_thread_id;
+
     reg [31:0] n_out_data;
     reg n_cpu_out_ack;
     // reg n_cpu_kernel_finished;
@@ -144,7 +147,8 @@ module gpu_controller(
         INSTR_NOP = 0,
         INSTR_COPY_TO_GPU = 1,
         INSTR_COPY_FROM_GPU = 2,
-        INSTR_KERNEL_LAUNCH = 3
+        INSTR_KERNEL_LAUNCH = 3,
+        INSTR_SET_THREAD_BASE = 4
     } e_instr;
 
     // reg [31:0] mem [512];  // put here for now, use comp's in a bit
@@ -180,6 +184,8 @@ module gpu_controller(
         n_core_set_pc_addr = '0;
         n_base_thread_id = '0;
 
+        n_stored_base_thread_id = stored_base_thread_id;
+
         for(int i = 0; i < MAX_PARAMS; i++) begin
             n_params[i] = params[i];
         end
@@ -198,6 +204,9 @@ module gpu_controller(
                         INSTR_COPY_FROM_GPU: begin
                             // $display("gpucontroller COPY_FROM_GPU");
                             n_num_params = 2;
+                        end
+                        INSTR_SET_THREAD_BASE: begin
+                            n_num_params = 1;
                         end
                         INSTR_KERNEL_LAUNCH: begin
                             // $display("gpucontroller INSTR_KERNEL_LAUNCH");
@@ -265,6 +274,10 @@ module gpu_controller(
                                     // $display("gpucontroller RECV_PARAMS INSTR_KERNEL_LAUNCH moving to state STATE_KERNEL_LAUNCH");
                                 end
                             end
+                            INSTR_SET_THREAD_BASE: begin
+                                n_stored_base_thread_id = n_params[0];
+                                n_state = STATE_IDLE;
+                            end
                             default: begin
                                 $display("recv params case instr hit default");
                             end
@@ -274,6 +287,7 @@ module gpu_controller(
                 STATE_KERNEL_LAUNCH: begin
                     // Assert clr for 1 cycle: resets cores, loads thread_ids
                     n_core_clr = 1;
+                    n_base_thread_id = stored_base_thread_id;
                     n_state = STATE_KERNEL_CLR;
                 end
                 STATE_KERNEL_CLR: begin
@@ -376,6 +390,8 @@ module gpu_controller(
             core_set_pc_addr <= '0;
             base_thread_id <= '0;
 
+            stored_base_thread_id <= '0;
+
             cpu_out_ack = 0;
             // cpu_kernel_finished = 0;
 
@@ -408,6 +424,8 @@ module gpu_controller(
             core_set_pc_req <= n_core_set_pc_req;
             core_set_pc_addr <= n_core_set_pc_addr;
             base_thread_id <= n_base_thread_id;
+
+            stored_base_thread_id <= n_stored_base_thread_id;
 
             cpu_out_ack = n_cpu_out_ack;
             // cpu_kernel_finished = n_cpu_kernel_finished;

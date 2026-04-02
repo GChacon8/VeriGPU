@@ -1,10 +1,10 @@
 #!/bin/bash
 # run_test_gpu_die_multicore.sh
-# CP-4+5 test: full gpu_die with compute_unit.
+# CP-6 test: full gpu_die with batching.
 set -e
 set -o pipefail
 
-echo "=== CP-4+5: Testing gpu_die with compute_unit (full stack) ==="
+echo "=== CP-6: Testing gpu_die with batching ==="
 echo ""
 
 mkdir -p build
