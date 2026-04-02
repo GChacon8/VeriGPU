@@ -64,6 +64,7 @@ module gpu_controller(
     output reg core_clr,
     output reg core_set_pc_req,
     output reg [data_width - 1:0] core_set_pc_addr,
+    output reg [data_width - 1:0] base_thread_id,
     input core_halt
 );
     parameter MAX_PARAMS = 20;
@@ -123,6 +124,7 @@ module gpu_controller(
     reg n_core_clr;
     reg n_core_set_pc_req;
     reg [data_width - 1:0] n_core_set_pc_addr;
+    reg [data_width - 1:0] n_base_thread_id;
 
     reg [31:0] n_out_data;
     reg n_cpu_out_ack;
@@ -134,6 +136,7 @@ module gpu_controller(
         STATE_RECEIVE_DATA,
         STATE_SEND_DATA,
         STATE_KERNEL_LAUNCH,
+        STATE_KERNEL_CLR,
         STATE_KERNEL_LAUNCH2
     } e_state;
 
@@ -175,6 +178,7 @@ module gpu_controller(
         n_core_clr = 0;
         n_core_set_pc_req = 0;
         n_core_set_pc_addr = '0;
+        n_base_thread_id = '0;
 
         for(int i = 0; i < MAX_PARAMS; i++) begin
             n_params[i] = params[i];
@@ -268,8 +272,12 @@ module gpu_controller(
                     end
                 end
                 STATE_KERNEL_LAUNCH: begin
-                    // $display("gpu_controller state STATE_KERNEL_LAUNCH set PC to %0d", params[0]);
-                    // n_core_ena = 1;
+                    // Assert clr for 1 cycle: resets cores, loads thread_ids
+                    n_core_clr = 1;
+                    n_state = STATE_KERNEL_CLR;
+                end
+                STATE_KERNEL_CLR: begin
+                    // Now set PC to kernel address (clr forced pc=128, we override)
                     n_core_set_pc_req = 1;
                     n_core_set_pc_addr = params[0];
                     n_state = STATE_KERNEL_LAUNCH2;
@@ -366,6 +374,7 @@ module gpu_controller(
             core_clr <= 0;
             core_set_pc_req <= 0;
             core_set_pc_addr <= '0;
+            base_thread_id <= '0;
 
             cpu_out_ack = 0;
             // cpu_kernel_finished = 0;
@@ -398,6 +407,7 @@ module gpu_controller(
             core_clr <= n_core_clr;
             core_set_pc_req <= n_core_set_pc_req;
             core_set_pc_addr <= n_core_set_pc_addr;
+            base_thread_id <= n_base_thread_id;
 
             cpu_out_ack = n_cpu_out_ack;
             // cpu_kernel_finished = n_cpu_kernel_finished;
