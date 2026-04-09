@@ -48,6 +48,7 @@ verilate(verigpu_runtime
         ${SRC}/op_const.sv
         ${SRC}/assert.sv
         ${SRC}/core.sv
+        ${SRC}/compute_unit.sv
         ${SRC}/mem_16mb.sv
         ${SRC}/float/float_params.sv
         ${SRC}/float/float_add_pipeline.sv
@@ -59,11 +60,13 @@ verilate(verigpu_runtime
         ${SRC}/int/int_div_regfile.sv
         ${SRC}/int/mul_pipeline_32bit.sv
         ${SRC}/global_mem_controller.sv
+        ${SRC}/mem_arbiter.sv
         ${SRC}/gpu_controller.sv
         ${SRC}/gpu_die.sv
         ${SRC}/gpu_card.sv
     TOP_MODULE gpu_card
     PREFIX gpu_card
+    VERILATOR_ARGS -Wno-IMPLICITSTATIC -Wno-fatal
 )
 if(LINUX)
     target_link_libraries(verigpu_runtime PRIVATE)

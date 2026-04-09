@@ -17,6 +17,7 @@ module core_and_mem(
     input contr_core1_clr,
     input contr_core1_set_pc_req,
     input [data_width - 1:0] contr_core1_set_pc_addr,
+    input [data_width - 1:0] contr_core1_thread_id,
     output reg contr_core1_halt
 );
 
@@ -70,6 +71,7 @@ module core_and_mem(
         .ena(contr_core1_ena),
         .set_pc_req(contr_core1_set_pc_req),
         .set_pc_addr(contr_core1_set_pc_addr),
+        .thread_id(contr_core1_thread_id),
 
         .outflen(outflen),
         .out(out),

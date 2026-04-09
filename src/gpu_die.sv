@@ -49,7 +49,7 @@ module gpu_die(
     wire [data_width - 1:0] contr_core1_set_pc_addr;
     wire contr_core1_halt;
 
-    reg core1_halt;
+    wire [data_width - 1:0] contr_base_thread_id;
 
     global_mem_controller global_mem_controller_(
         .clk(clk),
@@ -79,13 +79,15 @@ module gpu_die(
         // .contr_wen(oob_wen)
     );
 
-    core core1(
+    compute_unit #(.NUM_CORES(4)) cu_(
         .rst(rst),
         .clk(clk),
         .clr(contr_core1_clr),
         .ena(contr_core1_ena),
         .set_pc_req(contr_core1_set_pc_req),
         .set_pc_addr(contr_core1_set_pc_addr),
+
+        .base_thread_id(contr_base_thread_id),
 
         .outflen(outflen),
         .out(out),
@@ -123,6 +125,7 @@ module gpu_die(
         .core_clr(contr_core1_clr),
         .core_halt(contr_core1_halt),
         .core_set_pc_req(contr_core1_set_pc_req),
-        .core_set_pc_addr(contr_core1_set_pc_addr)
+        .core_set_pc_addr(contr_core1_set_pc_addr),
+        .base_thread_id(contr_base_thread_id)
     );
 endmodule

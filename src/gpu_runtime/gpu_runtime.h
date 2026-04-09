@@ -7,6 +7,7 @@
 // #include <stdlib.h>
 #include <cstdlib>
 #include <ostream>
+#include <stdint.h>
 
 #include "kernel_compile_defs.h"
 
@@ -36,6 +37,7 @@ void gpuLaunchKernel(const void *kernelPos, uint32_t numParams, const uint32_t *
 void tick();
 void gpuCreateContext();
 void gpuDestroyContext();
+void gpuSetBaseThreadId(uint32_t base);
 
 // struct dim3
 // {
