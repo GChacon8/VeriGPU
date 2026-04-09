@@ -1,7 +1,7 @@
 /*
 test_mem_arbiter.sv
 
-Behavioral test for CP-2: verifies the round-robin memory arbiter.
+Behavioral test verifies the round-robin memory arbiter.
 
 Setup:
   - mem_arbiter with NUM_CORES=2
@@ -9,14 +9,6 @@ Setup:
   - Arbiter downstream port wired to global_mem_controller core1_* port
   - Controller port (contr_*) used to pre-load and read-back memory
 
-Tests:
-  1. Single read from core 0
-  2. Single read from core 1
-  3. Single write from core 0, then readback to verify
-  4. Single write from core 1, then readback to verify
-  5. Simultaneous reads from both cores
-  6. Simultaneous writes from both cores, then readback both
-  7. Cross-read: core 0 reads what core 1 wrote, and vice versa
 */
 
 module test_mem_arbiter();

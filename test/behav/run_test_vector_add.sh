@@ -1,18 +1,14 @@
 #!/bin/bash
-# run_test_thread_id.sh
-# Compiles and runs the thread_id test.
-# Run from the repository root: bash test/behav/run_test_thread_id.sh
-
+# run_test_vector_add.sh
+# FINAL TEST: end-to-end vector operations with multi-core.
 set -e
 set -o pipefail
 
-echo "=== thread_id: Testing port on core ==="
+echo "=== End-to-end vector_add (FINAL TEST) ==="
 echo ""
 
 mkdir -p build
 
-# Compile with iverilog
-# Note: include paths may need adjustment depending on your generated files.
 iverilog -g2012 -Wall \
     src/const.sv \
     src/op_const.sv \
@@ -29,15 +25,17 @@ iverilog -g2012 -Wall \
     src/mem_large.sv \
     src/core.sv \
     src/global_mem_controller.sv \
-    test/behav/core_and_mem.sv \
-    test/behav/test_thread_id.sv \
-    -o build/test_thread_id
+    src/mem_arbiter.sv \
+    src/compute_unit.sv \
+    src/gpu_controller.sv \
+    src/gpu_die.sv \
+    test/behav/test_vector_add.sv \
+    -o build/test_vector_add
 
 echo "Compilation OK"
 echo ""
 
-# Run the simulation
-./build/test_thread_id
+./build/test_vector_add
 
 echo ""
 echo "=== Test complete ==="

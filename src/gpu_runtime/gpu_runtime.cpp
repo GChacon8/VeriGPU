@@ -33,7 +33,8 @@ enum e_instr
     NOP = 0,
     COPY_TO_GPU = 1,
     COPY_FROM_GPU = 2,
-    KERNEL_LAUNCH = 3
+    KERNEL_LAUNCH = 3,
+    SET_THREAD_BASE = 4
 };
 
 void tick()
@@ -44,6 +45,15 @@ void tick()
     dut->clk = 1;
     sim_time += 5;
     dut->eval();
+}
+
+void gpuSetBaseThreadId(uint32_t base) {
+    dut->cpu_recv_instr = SET_THREAD_BASE;
+    tick();
+    dut->cpu_in_data = base;
+    tick();
+    dut->cpu_recv_instr = NOP;
+    tick();
 }
 
 void gpuCreateContext()

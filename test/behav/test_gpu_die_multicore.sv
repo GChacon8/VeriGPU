@@ -1,11 +1,11 @@
 /*
 test_gpu_die_multicore.sv
 
-CP-4+5+6 test: exercises the full gpu_die stack.
+Test: exercises the full gpu_die stack.
 
-Tests 1-3: from CP-4+5 (single batch)
-Test 4: CP-6 batching — 8 threads in 2 batches of 4
-Test 5: CP-6 batching — 12 threads in 3 batches of 4
+Tests 1-3: (single batch)
+Test 4: batching — 8 threads in 2 batches of 4
+Test 5: batching — 12 threads in 3 batches of 4
 */
 
 module test_gpu_die_multicore();

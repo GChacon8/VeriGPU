@@ -1,12 +1,12 @@
 #!/bin/bash
 # run_test_mem_arbiter.sh
-# Compiles and runs the CP-2 memory arbiter test.
+# Compiles and runs the memory arbiter test.
 # Run from the repository root: bash test/behav/run_test_mem_arbiter.sh
 
 set -e
 set -o pipefail
 
-echo "=== CP-2: Testing mem_arbiter (round-robin) ==="
+echo "=== Testing mem_arbiter (round-robin) ==="
 echo ""
 
 mkdir -p build

@@ -1,31 +1,12 @@
 /*
-mem_arbiter.sv — Round-robin memory arbiter for multi-core
+Round-robin memory arbiter for multi-core
 
 Multiplexes N core memory ports onto 1 downstream memory port
-(matching the core1_* interface of global_mem_controller).
-
-Protocol summary:
-  - Cores send rd_req or wr_req as 1-cycle combinational pulses
-  - Arbiter latches each request on the clock edge (1 cycle capture delay)
-  - Round-robin scan selects the next pending request to forward downstream
-  - When downstream acks, the ack and rd_data are forwarded combinationally
-    to the requesting core (zero extra ack latency)
 
 Total added latency vs direct connection: 1 cycle (for the latch).
 
-Constraint: NUM_CORES must be a power of 2 (1, 2, 4, 8).
+Constraint: NUM_CORES must be a power of 2.
 
-The controller port (contr_*) on global_mem_controller is NOT routed
-through this arbiter — it stays separate, as the controller only
-accesses memory when cores are disabled.
-
-CP-3 FIX: Removed !pending_rd[i] && !pending_wr[i] guards from latch
-conditions. These caused a deadlock when a core received ack and
-immediately sent a new request on the same cycle (standard core behavior
-for single-cycle instructions). The guard evaluated the pre-NBA pending
-value (still 1), rejecting the new request even though the clear NBA
-would set it to 0. Without the guard, the latch NBA (later in code)
-correctly wins over the clear NBA for the same variable.
 */
 
 `default_nettype none
@@ -182,10 +163,6 @@ module mem_arbiter #(
             end
 
             // Latch new requests SECOND.
-            // FIX: No guard on !pending_rd/wr. A core only sends a new
-            // request after receiving ack (it's blocked in C1/C2 until then).
-            // The only overlap is: clear + new request on the same cycle.
-            // Since this NBA comes after the clear NBA, it wins correctly.
             for (i = 0; i < NUM_CORES; i = i + 1) begin
                 if (core_rd_req[i]) begin
                     pending_rd[i]    <= 1;

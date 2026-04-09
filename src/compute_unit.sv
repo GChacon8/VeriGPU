@@ -1,24 +1,15 @@
 /*
-compute_unit.sv
-
 A compute unit containing NUM_CORES cores sharing a single memory port
 via a round-robin arbiter.
 
-Key design decisions:
-  - All cores receive the SAME control signals (clr, ena, set_pc_req,
-    set_pc_addr) — this is SIMT: same program, different thread IDs.
-  - Each core's thread_id = base_thread_id + its index (0..NUM_CORES-1).
-    base_thread_id is an input so the controller can launch in batches.
-  - halt uses a LATCH: each core's momentary halt pulse is captured in
-    a register. Collective halt = AND of all latched halts. This is
-    necessary because the round-robin arbiter causes cores to reach
-    halt at different times.
-  - Debug output (out/outen/outflen) comes from core 0 only.
-  - The external memory port has the same protocol as a single core's
-    port, so gpu_die.sv can swap a single core for a compute_unit
-    with zero wiring changes on the memory controller side.
+All cores receive the SAME control signals (clr, ena, set_pc_req,
+set_pc_addr), this is SIMT: same program, different thread IDs.
 
-NUM_CORES must be a power of 2 (constraint from mem_arbiter).
+The external memory port has the same protocol as a single core's
+port, so gpu_die.sv can swap a single core for a compute_unit
+with zero wiring changes on the memory controller side.
+
+NUM_CORES must be a power of 2 (constraint of the mem_arbiter).
 */
 
 `default_nettype none

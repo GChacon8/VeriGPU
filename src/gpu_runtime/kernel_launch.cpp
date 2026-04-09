@@ -401,7 +401,7 @@ void kernelGo()
         // - whilst disabled, can have something like req_set_pc, and pc_value
 
         if(stackGpu == 0) {  // obviously not thread safe
-            stackGpu = gpuMalloc(stackSize);
+            stackGpu = gpuMalloc(totalStackSize);
         }
         // std::cout << "allocated stack pos=" << (size_t)(stack) << std::endl;
 /*
@@ -434,7 +434,13 @@ halt
         if (gpuKernelByName.find(launchConfiguration.kernelName) == gpuKernelByName.end()) {
             // std::cout << "building kernel " << launchConfiguration.kernelName << std::endl;
             // we should probably make the li for sp also dynamic
-            asmHeader << "li sp, " << ((size_t)(stackGpu) + stackSize) << std::endl;
+            // Per-core stack: sp = stackBase + thread_id * stackPerCore + stackPerCore
+            // x5 = thread_id (loaded by hardware during clr)
+            // x6 = temporary for stack offset computation
+            asmHeader << "li sp, " << (size_t)(stackGpu) << std::endl;
+            asmHeader << "slli x6, x5, 7" << std::endl;     // x6 = tid * 128
+            asmHeader << "add sp, sp, x6" << std::endl;      // sp = base + tid*128
+            asmHeader << "addi sp, sp, " << stackPerCore << std::endl; // top of core's region
             asmHeader << "jal x1, " << launchConfiguration.kernelName << std::endl;
             asmHeader << "halt" << std::endl;
             // std::cout << "asmHeader:" << std::endl;
@@ -487,7 +493,13 @@ halt
             args_as_ints.push_back(launchConfiguration.args[i]->asUInt32());
         }
         // std::cout << "launching kernel" << std::endl;
-        gpuLaunchKernel(gpuKernelByName[launchConfiguration.kernelName], launchConfiguration.args.size(), &args_as_ints[0]);
+        int total_threads = launchConfiguration.grid[0] * launchConfiguration.block[0];
+        int num_cores = 4;
+        for (int batch = 0; batch < total_threads; batch += num_cores) {
+            gpuSetBaseThreadId(batch);
+            gpuLaunchKernel(gpuKernelByName[launchConfiguration.kernelName],
+                            launchConfiguration.args.size(), &args_as_ints[0]);
+        }
 
         // launchMutex.unlock();
         // launchMutex.unlock();

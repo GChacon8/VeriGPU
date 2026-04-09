@@ -23,7 +23,8 @@
 #include "kernel_launch_ext.h"
 #include "launch_args.h"
 
-long stackSize = 128;
+long stackPerCore = 128;
+long totalStackSize = stackPerCore * 16;
 
 // namespace VeriGPU
 // {

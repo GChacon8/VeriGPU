@@ -1,10 +1,10 @@
 #!/bin/bash
 # run_test_compute_unit.sh
-# Compiles and runs the CP-3 compute_unit diagnostic test.
+# Compiles and runs the compute_unit diagnostic test.
 set -e
 set -o pipefail
 
-echo "=== CP-3: Testing compute_unit (DIAGNOSTIC) ==="
+echo "=== compute_unit: Testing (DIAGNOSTIC) ==="
 echo ""
 
 mkdir -p build

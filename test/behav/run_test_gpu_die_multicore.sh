@@ -1,10 +1,10 @@
 #!/bin/bash
 # run_test_gpu_die_multicore.sh
-# CP-6 test: full gpu_die with batching.
+# test: full gpu_die with batching.
 set -e
 set -o pipefail
 
-echo "=== CP-6: Testing gpu_die with batching ==="
+echo "=== gpu_die: Testing with batching ==="
 echo ""
 
 mkdir -p build

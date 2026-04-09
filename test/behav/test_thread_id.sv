@@ -1,7 +1,7 @@
 /*
 test_thread_id.sv
 
-Behavioral test for CP-1: verifies that the core receives a thread_id
+Behavioral test: verifies that the core receives a thread_id
 via its new input port, loads it into register x5 (t0) during clr,
 and that a program can read and output that value.
 
