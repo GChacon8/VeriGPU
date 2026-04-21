@@ -68,5 +68,7 @@ typedef enum bit[4:0] {
     FSUB =  5'b00001,
     FMUL =  5'b00010,
     FDIV =  5'b00011,
-    FSQRT = 5'b01011
+    FSGNJ = 5'b00100,   // sign manipulation
+    FSQRT = 5'b01011,
+    FCMP  = 5'b10100    // float comparison
 } e_funct5_float;

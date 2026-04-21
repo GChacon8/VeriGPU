@@ -93,12 +93,14 @@ flt_rm_bits = {
 
 
 funct5_bits_float = {
-    'FADD':  '00000',
-    'FSUB':  '00001',
-    'FMUL':  '00010',
-    'FDIV':  '00011',
-    'FSQRT': '01011'
-}
+       'FADD':  '00000',
+       'FSUB':  '00001',
+       'FMUL':  '00010',
+       'FDIV':  '00011',
+       'FSGNJ': '00100',   # CP-1: sign manipulation
+       'FSQRT': '01011',
+       'FCMP':  '10100',   # CP-1: float comparison
+   }
 
 reg_aliases = {
     'zero': 'x0',
@@ -723,18 +725,45 @@ def run(args):
                 hex_lines.append(bits_to_hex(instr_bits))
             elif cmd.startswith('f'):
                 cmd, _, fmt = cmd.partition('.')
+ 
+                # Pseudo-instrucciones de 2 operandos → expandir a 3 operandos
+                # fneg.s rd, rs → fsgnjn.s rd, rs, rs
+                # fabs.s rd, rs → fsgnjx.s rd, rs, rs
+                # fmv.s  rd, rs → fsgnj.s  rd, rs, rs
+                if cmd in ['fneg', 'fabs', 'fmv']:
+                    p3 = p2  # rs2 = rs1
+                    cmd = {'fneg': 'fsgnjn', 'fabs': 'fsgnjx', 'fmv': 'fsgnj'}[cmd]
+ 
                 op_bits = op_bits_by_op['OPFP']
                 fmt_bits = flt_fmt_bits[fmt.upper()]
-                funct5_bits = funct5_bits_float[cmd.upper()]
-                rm_bits = flt_rm_bits['RNE']
-
+ 
                 rd_bits = reg_str_to_bits(p1)
                 rs1_bits = reg_str_to_bits(p2)
                 rs2_bits = reg_str_to_bits(p3)
-
+ 
                 if cmd in ['fadd', 'fsub', 'fmul', 'fdiv', 'fsqrt']:
+                    # Instrucciones aritméticas float — usan rounding mode en funct3
+                    funct5_bits = funct5_bits_float[cmd.upper()]
+                    rm_bits = flt_rm_bits['RNE']
                     instr_bits = f'{funct5_bits}{fmt_bits}{rs2_bits}{rs1_bits}{rm_bits}{rd_bits}{op_bits}'
                     hex_lines.append(bits_to_hex(instr_bits))
+ 
+                elif cmd in ['feq', 'flt', 'fle']:
+                    # Comparaciones float — funct3 selecciona variante
+                    #   FLE.S: funct3=000, FLT.S: funct3=001, FEQ.S: funct3=010
+                    funct5_bits = funct5_bits_float['FCMP']
+                    funct3_bits = {'feq': '010', 'flt': '001', 'fle': '000'}[cmd]
+                    instr_bits = f'{funct5_bits}{fmt_bits}{rs2_bits}{rs1_bits}{funct3_bits}{rd_bits}{op_bits}'
+                    hex_lines.append(bits_to_hex(instr_bits))
+ 
+                elif cmd in ['fsgnj', 'fsgnjn', 'fsgnjx']:
+                    # Manipulación de signo — funct3 selecciona variante
+                    #   FSGNJ.S: funct3=000, FSGNJN.S: funct3=001, FSGNJX.S: funct3=010
+                    funct5_bits = funct5_bits_float['FSGNJ']
+                    funct3_bits = {'fsgnj': '000', 'fsgnjn': '001', 'fsgnjx': '010'}[cmd]
+                    instr_bits = f'{funct5_bits}{fmt_bits}{rs2_bits}{rs1_bits}{funct3_bits}{rd_bits}{op_bits}'
+                    hex_lines.append(bits_to_hex(instr_bits))
+ 
                 else:
                     print(line)
                     raise Exception('unhandled cmd', cmd)

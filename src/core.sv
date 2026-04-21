@@ -315,7 +315,14 @@ module core(
         input [data_width - 1:0] _rs2_data
     );
         reg [4:0] funct5;
+        reg [2:0] funct3;
+        // CP-1: variables para comparación float IEEE 754
+        reg a_sign, b_sign;
+        reg [30:0] a_mag, b_mag;
+        reg float_eq, float_lt;
+ 
         funct5 = _instr[31:27];
+        funct3 = _instr[14:12];
         `assert_known(funct5);
         case (funct5)
             FADD: begin
@@ -325,12 +332,105 @@ module core(
                 n_fadd_b = _rs2_data;
                 next_state = C2;
             end
+            FSUB: begin
+                // CP-1: FSUB.S reutiliza float_add_pipeline negando signo de b
+                // a - b = a + (-b), donde -b es b con bit 31 invertido
+                // $display("FSUB.C1 x%0d <= x%0d - x%0d", _rd_sel, _instr[19:15], _instr[24:20]);
+                n_fadd_req = 1;
+                n_fadd_a = _rs1_data;
+                n_fadd_b = {~_rs2_data[31], _rs2_data[30:0]}; // negar signo
+                next_state = C2;
+            end
             FMUL: begin
                 // $display("FMUL.C1 x%0d <=", _rd_sel);
                 n_fmul_req = 1;
                 n_fmul_a = _rs1_data;
                 n_fmul_b = _rs2_data;
                 next_state = C2;
+            end
+            FCMP: begin
+                // Comparaciones float — FEQ.S, FLT.S, FLE.S
+                // Operación de 1 ciclo (combinacional), no va a C2.
+                // Resultado: rd = 0 o 1 (entero).
+                //
+                // Lógica IEEE 754 para comparación:
+                //   - +0.0 y -0.0 son iguales
+                //   - Si signos difieren: negativo < positivo
+                //   - Si ambos positivos: magnitud menor = valor menor
+                //   - Si ambos negativos: magnitud mayor = valor menor
+ 
+                a_sign = _rs1_data[31];
+                b_sign = _rs2_data[31];
+                a_mag  = _rs1_data[30:0];
+                b_mag  = _rs2_data[30:0];
+ 
+                // float_eq: igualdad (maneja +0 == -0)
+                if (a_mag == 0 && b_mag == 0)
+                    float_eq = 1;
+                else
+                    float_eq = (_rs1_data == _rs2_data);
+ 
+                // float_lt: menor estricto
+                if (a_mag == 0 && b_mag == 0)
+                    float_lt = 0;              // +0 no es menor que -0
+                else if (a_sign != b_sign)
+                    float_lt = a_sign;         // negativo < positivo
+                else if (a_sign == 0)
+                    float_lt = (a_mag < b_mag); // ambos positivos
+                else
+                    float_lt = (a_mag > b_mag); // ambos negativos: mayor magnitud = menor valor
+ 
+                `assert_known(funct3);
+                case (funct3)
+                    3'b010: begin // FEQ.S
+                        // $display("FEQ.C1 x%0d <= (%b == %b) = %0d", _rd_sel, _rs1_data, _rs2_data, float_eq);
+                        wr_reg_data = {31'd0, float_eq};
+                    end
+                    3'b001: begin // FLT.S
+                        // $display("FLT.C1 x%0d <= (%b < %b) = %0d", _rd_sel, _rs1_data, _rs2_data, float_lt);
+                        wr_reg_data = {31'd0, float_lt};
+                    end
+                    3'b000: begin // FLE.S
+                        // $display("FLE.C1 x%0d <= (%b <= %b) = %0d", _rd_sel, _rs1_data, _rs2_data, float_eq | float_lt);
+                        wr_reg_data = {31'd0, float_eq | float_lt};
+                    end
+                    default: begin
+                        $display("FCMP unknown funct3=%b", funct3);
+                        halt = 1;
+                    end
+                endcase
+                wr_reg_sel = _rd_sel;
+                wr_reg_req = 1;
+                read_next_instr(pc + 4);
+            end
+            FSGNJ: begin
+                // Manipulación de signo — FSGNJ.S, FSGNJN.S, FSGNJX.S
+                // Operación de 1 ciclo (combinacional), no va a C2.
+                // Toma la magnitud (exp+mantisa) de rs1 y modifica el signo
+                // según funct3:
+                //   000: FSGNJ.S  — signo = signo(rs2)
+                //   001: FSGNJN.S — signo = ~signo(rs2)  (pseudo: FNEG.S)
+                //   010: FSGNJX.S — signo = signo(rs1) XOR signo(rs2)  (pseudo: FABS.S)
+ 
+                `assert_known(funct3);
+                case (funct3)
+                    3'b000: begin // FSGNJ.S
+                        wr_reg_data = {_rs2_data[31], _rs1_data[30:0]};
+                    end
+                    3'b001: begin // FSGNJN.S (FNEG cuando rs1==rs2)
+                        wr_reg_data = {~_rs2_data[31], _rs1_data[30:0]};
+                    end
+                    3'b010: begin // FSGNJX.S (FABS cuando rs1==rs2)
+                        wr_reg_data = {_rs1_data[31] ^ _rs2_data[31], _rs1_data[30:0]};
+                    end
+                    default: begin
+                        $display("FSGNJ unknown funct3=%b", funct3);
+                        halt = 1;
+                    end
+                endcase
+                wr_reg_sel = _rd_sel;
+                wr_reg_req = 1;
+                read_next_instr(pc + 4);
             end
             default: begin
                 $display("op_fp case funct5 default shoult not be hit");
@@ -353,6 +453,19 @@ module core(
                 `assert_known(fadd_ack);
                 if(fadd_ack) begin
                     // $display("FADD.C2 x%0d <= %b", _rd_sel, fadd_out);
+                    wr_reg_data = fadd_out;
+                    wr_reg_sel = _rd_sel;
+                    wr_reg_req = 1;
+                    read_next_instr(pc + 4);
+                end
+            end
+            FSUB: begin
+                // FSUB reutiliza el pipeline de FADD
+                // (la negación del operando b ocurrió en C1)
+                // Aquí solo esperamos el resultado, idéntico a FADD.
+                `assert_known(fadd_ack);
+                if(fadd_ack) begin
+                    // $display("FSUB.C2 x%0d <= %b", _rd_sel, fadd_out);
                     wr_reg_data = fadd_out;
                     wr_reg_sel = _rd_sel;
                     wr_reg_req = 1;
