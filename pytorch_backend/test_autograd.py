@@ -61,8 +61,9 @@ def check_close(name, got, expected, atol=1e-5):
 # ── Helper ─────────────────────────────────────────────────────────────
 
 def gpu_grad(data):
-    """Create a float32 tensor on verigpu with requires_grad=True."""
-    return torch.tensor(data, dtype=torch.float32, requires_grad=True).to("verigpu")
+    """Create a float32 leaf tensor on verigpu with requires_grad=True."""
+    # .to() creates a non-leaf. Instead: create on device, THEN enable grad.
+    return torch.tensor(data, dtype=torch.float32).to("verigpu").detach().requires_grad_(True)
 
 # ====================================================================
 # View ops (prerequisites for autograd)
@@ -197,7 +198,7 @@ try:
 
     # grad_output is all ones (from .sum())
     # grad_A = ones(2,2) @ B.T = [[5+7, 6+8], [5+7, 6+8]] = [[12,14],[12,14]]
-    expected_grad_A = torch.tensor([[12.0, 14.0], [12.0, 14.0]])
+    expected_grad_A = torch.tensor([[11.0, 15.0], [11.0, 15.0]])
     # grad_B = A.T @ ones(2,2) = [[1+3, 1+3], [2+4, 2+4]] = [[4,4],[6,6]]
     expected_grad_B = torch.tensor([[4.0, 4.0], [6.0, 6.0]])
 

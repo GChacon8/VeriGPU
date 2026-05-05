@@ -1,14 +1,16 @@
 // verigpu_backend.cpp — PyTorch custom backend for VeriGPU
-// CP3: allocator, device guard, copy, empty, fill, zero
-// CP4: add (Tensor, Scalar, in-place)
-// CP5: sub, mul, div, neg, abs, relu, clamp + in-place variants
-// CP6: sum, mean (full + dim), mm, addmm
-
+// CP-3: allocator, device guard, copy, empty, fill, zero
+// CP-4: add (Tensor, Scalar, in-place)
+// CP-5: sub, mul, div, neg, abs, relu, clamp + in-place variants
+// CP-6: sum, mean (full + dim), mm, addmm
+// CP-7: autograd ops — view ops, threshold_backward, _local_scalar_dense
+#include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <torch/extension.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <functional>
 #include <vector>
 #include <numeric>
 
@@ -73,6 +75,21 @@ struct VeriGPUGuardImpl final : public c10::impl::DeviceGuardImplInterface {
 };
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, VeriGPUGuardImpl);
+
+// =====================================================================
+// 2b. HOOKS INTERFACE (required by autograd in PyTorch 2.11+)
+// =====================================================================
+
+struct VeriGPUHooksInterface : public at::PrivateUse1HooksInterface {
+    bool hasPrimaryContext(c10::DeviceIndex) const override {
+        return true;
+    }
+};
+
+static auto _hooks_reg = []() {
+    at::RegisterPrivateUse1HooksInterface(new VeriGPUHooksInterface());
+    return true;
+}();
 
 // =====================================================================
 // 3. HELPERS
@@ -228,22 +245,76 @@ at::Tensor verigpu_empty_strided(
         dtype_opt.value_or(at::ScalarType::Float));
 }
 
+// ── Stride-aware copy helper (no PyTorch calls — no recursion) ──────
+// Copies elements from src to dst respecting src's strides.
+// dst is assumed contiguous. src may be non-contiguous (e.g. transposed).
+static void strided_copy_to_contiguous(void* dst_ptr, const at::Tensor& src) {
+    auto n = src.numel();
+    auto dt = src.scalar_type();
+    auto ndim = src.dim();
+    auto sizes = src.sizes();
+    auto strides = src.strides();
+
+    // For each logical element, compute its offset via strides
+    #define STRIDED_COPY(T) { \
+        const T* sp = src.data_ptr<T>(); T* dp = static_cast<T*>(dst_ptr); \
+        for (int64_t flat = 0; flat < n; flat++) { \
+            int64_t offset = 0, idx = flat; \
+            for (int64_t d = ndim - 1; d >= 0; d--) { \
+                offset += (idx % sizes[d]) * strides[d]; \
+                idx /= sizes[d]; \
+            } \
+            dp[flat] = sp[offset]; \
+        } \
+    }
+
+    if      (dt == at::ScalarType::Float)  STRIDED_COPY(float)
+    else if (dt == at::ScalarType::Double) STRIDED_COPY(double)
+    else if (dt == at::ScalarType::Int)    STRIDED_COPY(int32_t)
+    else if (dt == at::ScalarType::Long)   STRIDED_COPY(int64_t)
+    else if (dt == at::ScalarType::Bool)   STRIDED_COPY(bool)
+    else { TORCH_CHECK(false, "VeriGPU strided_copy: unsupported dtype"); }
+
+    #undef STRIDED_COPY
+}
+
 at::Tensor& verigpu_copy_(at::Tensor& self, const at::Tensor& src, bool) {
-    auto nbytes = self.nbytes();
-    if (nbytes > 0 && self.data_ptr() != src.data_ptr()) {
-        auto sc = src.contiguous();
-        TORCH_CHECK(nbytes == (size_t)sc.nbytes(), "VeriGPU copy_: size mismatch");
-        memcpy(self.data_ptr(), sc.data_ptr(), nbytes);
+    if (self.numel() == 0) return self;
+    if (self.data_ptr() == src.data_ptr() && self.is_contiguous() && src.is_contiguous())
+        return self;
+
+    if (src.is_contiguous()) {
+        auto sc = src;
+        TORCH_CHECK(self.nbytes() == (size_t)sc.nbytes(), "VeriGPU copy_: size mismatch");
+        memcpy(self.data_ptr(), sc.data_ptr(), self.nbytes());
+    } else {
+        // Non-contiguous source: direct stride-aware copy, no recursion
+        strided_copy_to_contiguous(self.data_ptr(), src);
     }
     return self;
 }
+
 at::Tensor verigpu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool) {
-    if (self.nbytes() > 0) { auto sc = self.contiguous(); memcpy(dst.data_ptr(), sc.data_ptr(), sc.nbytes()); }
+    if (self.numel() == 0) return dst;
+
+    if (self.is_contiguous()) {
+        memcpy(dst.data_ptr(), self.data_ptr(), self.nbytes());
+    } else {
+        // Non-contiguous on our device: direct stride-aware copy to CPU dst
+        strided_copy_to_contiguous(dst.data_ptr(), self);
+    }
     return dst;
 }
+
 at::Tensor verigpu_copy_from_and_resize(const at::Tensor& self, const at::Tensor& dst) {
     dst.resize_as_(self);
-    if (self.nbytes() > 0) { auto sc = self.contiguous(); memcpy(dst.data_ptr(), sc.data_ptr(), sc.nbytes()); }
+    if (self.numel() == 0) return dst;
+
+    if (self.is_contiguous()) {
+        memcpy(dst.data_ptr(), self.data_ptr(), self.nbytes());
+    } else {
+        strided_copy_to_contiguous(dst.data_ptr(), self);
+    }
     return dst;
 }
 
@@ -651,7 +722,152 @@ at::Tensor verigpu_addmm(const at::Tensor& self, const at::Tensor& mat1,
 }
 
 // =====================================================================
-// 14. REGISTER ALL OPERATIONS
+// 15. VIA-CPU HELPER (CP-7)
+// =====================================================================
+// Run an op on CPU and bring result back to our device.
+// Since our GPU memory IS host memory, this is just memcpy overhead.
+
+static at::Tensor via_cpu(const at::Tensor& self,
+    std::function<at::Tensor(const at::Tensor&)> cpu_op)
+{
+    auto cpu_input = self.cpu();
+    auto cpu_result = cpu_op(cpu_input).contiguous();
+    auto out = make_verigpu_contiguous(cpu_result.sizes(), cpu_result.scalar_type());
+    memcpy(out.data_ptr(), cpu_result.data_ptr(), cpu_result.nbytes());
+    return out;
+}
+
+// =====================================================================
+// 16. VIEW OPS (CP-7) — shared-storage operations for autograd
+// =====================================================================
+// These create new tensor views or copies that autograd's backward
+// formulas need internally: transpose for mm backward, reshape for
+// gradient shape manipulation, expand for sum backward, etc.
+
+// as_strided: fundamental view op — shares storage, changes sizes/strides
+at::Tensor verigpu_as_strided(const at::Tensor& self, at::IntArrayRef size,
+    at::IntArrayRef stride, std::optional<int64_t> storage_offset)
+{
+    auto offset = storage_offset.value_or(self.storage_offset());
+    auto tensor = at::detail::make_tensor<c10::TensorImpl>(
+        c10::Storage(self.storage()),
+        c10::DispatchKeySet(c10::DispatchKey::PrivateUse1),
+        self.dtype());
+    tensor.unsafeGetTensorImpl()->set_sizes_and_strides(size, stride);
+    tensor.unsafeGetTensorImpl()->set_storage_offset(offset);
+    return tensor;
+}
+
+at::Tensor verigpu_t(const at::Tensor& self) {
+    TORCH_CHECK(self.dim() <= 2, "VeriGPU t: need ≤2D, got ", self.dim());
+    if (self.dim() < 2) return self;
+    return via_cpu(self, [](const at::Tensor& cpu) {
+        return cpu.t().contiguous();
+    });
+}
+
+at::Tensor verigpu_transpose(const at::Tensor& self, int64_t dim0, int64_t dim1) {
+    return via_cpu(self, [&](const at::Tensor& cpu) {
+        return cpu.transpose(dim0, dim1).contiguous();
+    });
+}
+
+// view / reshape
+at::Tensor verigpu_view(const at::Tensor& self, at::IntArrayRef shape) {
+    return via_cpu(self, [&](const at::Tensor& cpu) {
+        return cpu.view(shape).contiguous();
+    });
+}
+
+at::Tensor verigpu_reshape(const at::Tensor& self, at::IntArrayRef shape) {
+    return via_cpu(self, [&](const at::Tensor& cpu) {
+        return cpu.reshape(shape).contiguous();
+    });
+}
+
+// unsqueeze — add a dimension of size 1
+at::Tensor verigpu_unsqueeze(const at::Tensor& self, int64_t dim) {
+    auto ndim = self.dim();
+    if (dim < 0) dim += ndim + 1;
+    auto sizes = self.sizes().vec();
+    auto strides = self.strides().vec();
+    int64_t new_stride = (dim < ndim && !strides.empty()) ? strides[dim] : 1;
+    if (dim > 0 && dim <= (int64_t)strides.size()) {
+        new_stride = sizes[dim - 1] * strides[dim - 1];
+    }
+    sizes.insert(sizes.begin() + dim, 1);
+    strides.insert(strides.begin() + dim, new_stride);
+    return verigpu_as_strided(self, sizes, strides, self.storage_offset());
+}
+
+// expand — broadcast a tensor to a larger size
+at::Tensor verigpu_expand(const at::Tensor& self, at::IntArrayRef size, bool) {
+    return via_cpu(self, [&](const at::Tensor& cpu) {
+        return cpu.expand(size).contiguous();
+    });
+}
+
+// slice — extract a sub-range along a dimension
+at::Tensor verigpu_slice(const at::Tensor& self, int64_t dim,
+    std::optional<int64_t> start, std::optional<int64_t> end, int64_t step)
+{
+    return via_cpu(self, [&](const at::Tensor& cpu) {
+        return cpu.slice(dim, start, end, step).contiguous();
+    });
+}
+
+// =====================================================================
+// 17. GRADIENT-SPECIFIC OPS (CP-7)
+// =====================================================================
+
+// threshold_backward: gradient of relu
+// grad_input = grad_output * (self > threshold)
+at::Tensor verigpu_threshold_backward(const at::Tensor& grad_output,
+    const at::Tensor& self, const at::Scalar& threshold)
+{
+    auto g = grad_output.contiguous();
+    auto s = self.contiguous();
+    auto output = make_output_like(g);
+    auto n = g.numel();
+    auto dtype = g.scalar_type();
+
+    if (dtype == at::ScalarType::Float) {
+        const float* pg = g.data_ptr<float>();
+        const float* ps = s.data_ptr<float>();
+        float* po = output.data_ptr<float>();
+        float thresh = threshold.toFloat();
+        for (int64_t i = 0; i < n; i++)
+            po[i] = ps[i] > thresh ? pg[i] : 0.0f;
+    } else if (dtype == at::ScalarType::Double) {
+        const double* pg = g.data_ptr<double>();
+        const double* ps = s.data_ptr<double>();
+        double* po = output.data_ptr<double>();
+        double thresh = threshold.toDouble();
+        for (int64_t i = 0; i < n; i++)
+            po[i] = ps[i] > thresh ? pg[i] : 0.0;
+    } else {
+        TORCH_CHECK(false, "VeriGPU threshold_backward: float/double only");
+    }
+    return output;
+}
+
+// _local_scalar_dense: extract a Python scalar from a 0-dim or 1-element tensor.
+// Called by loss.item(), and by some autograd internals.
+at::Scalar verigpu_local_scalar_dense(const at::Tensor& self) {
+    TORCH_CHECK(self.numel() == 1, "VeriGPU _local_scalar_dense: need 1 element");
+    auto a = self.contiguous();
+    auto dt = a.scalar_type();
+    if (dt == at::ScalarType::Float) return at::Scalar(*a.data_ptr<float>());
+    if (dt == at::ScalarType::Double) return at::Scalar(*a.data_ptr<double>());
+    if (dt == at::ScalarType::Int) return at::Scalar(*a.data_ptr<int32_t>());
+    if (dt == at::ScalarType::Long) return at::Scalar(*a.data_ptr<int64_t>());
+    if (dt == at::ScalarType::Bool) return at::Scalar(*a.data_ptr<bool>());
+    TORCH_CHECK(false, "VeriGPU _local_scalar_dense: unsupported dtype");
+}
+
+
+// =====================================================================
+// 18. REGISTER ALL OPERATIONS
 // =====================================================================
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
@@ -692,6 +908,20 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("mean.dim",               &verigpu_mean_dim);
     m.impl("mm",                     &verigpu_mm);
     m.impl("addmm",                  &verigpu_addmm);
+
+    // CP-7: view ops (for autograd backward)
+    m.impl("as_strided",             &verigpu_as_strided);
+    m.impl("t",                      &verigpu_t);
+    m.impl("transpose.int",          &verigpu_transpose);
+    m.impl("view",                   &verigpu_view);
+    m.impl("reshape",                &verigpu_reshape);
+    m.impl("unsqueeze",              &verigpu_unsqueeze);
+    m.impl("expand",                 &verigpu_expand);
+    m.impl("slice.Tensor",           &verigpu_slice);
+
+    // CP-7: gradient ops
+    m.impl("threshold_backward",     &verigpu_threshold_backward);
+    m.impl("_local_scalar_dense",    &verigpu_local_scalar_dense);
 }
 
 } // anonymous namespace

@@ -1,17 +1,14 @@
 #!/bin/bash
-# build_and_test.sh — Build and test (reduction + matmul)
+# build_and_test.sh — Build and test CP-7 (autograd)
 # Run from repository root: bash pytorch_backend/build_and_test.sh
-
 set -e
 set -o pipefail
 
-echo "=== VeriGPU reduction & matmul — Build & Test ==="
+echo "=== CP-7: VeriGPU autograd — Build & Test ==="
 echo ""
 
 python3 -c "import torch" 2>/dev/null || {
-    echo "ERROR: PyTorch not found. source .venv/bin/activate"
-    exit 1
-}
+    echo "ERROR: PyTorch not found. source .venv/bin/activate"; exit 1; }
 
 echo "Step 1: Building C++ extension..."
 cd pytorch_backend
@@ -20,8 +17,8 @@ echo "  Build OK"
 echo ""
 cd ..
 
-echo "Step 2: Running tests..."
-python3 pytorch_backend/test_reduce_matmul.py
+echo "Step 2: Running CP-7 tests..."
+python3 pytorch_backend/test_autograd.py
 
 echo ""
 echo "=== Done ==="
