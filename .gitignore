@@ -41,3 +41,4 @@ pull/
 push.sh
 pull.sh
 
+.venv/
