@@ -14,6 +14,21 @@
 #include <vector>
 #include <numeric>
 
+// --- HW mode: Verilator runtime integration (CP-4 HW Roadmap) ---
+// We forward-declare the runtime functions instead of #including
+// gpu_runtime.h to avoid conflicts with its __global__/__device__ macros.
+#ifdef VERIGPU_HW_AVAILABLE
+extern void gpuCreateContext();
+extern void* gpuMalloc(uint32_t requestedBytes);
+extern void gpuCopyToDevice(void* gpuMemPtr, const void* srcData, size_t numBytes);
+extern void gpuCopyFromDevice(void* destData, const void* gpuMemPtr, size_t numBytes);
+extern void gpuLaunchKernel(const void* kernelPos, uint32_t numParams, const uint32_t* const p_params);
+extern void gpuDestroyContext();
+extern void gpuSetBaseThreadId(uint32_t base);
+#endif
+ 
+static bool g_hw_mode = false;
+
 namespace {
 
 // =====================================================================
@@ -43,6 +58,21 @@ struct VeriGPUAllocator final : public c10::Allocator {
 static VeriGPUAllocator g_allocator;
 static bool _reg = []() {
     c10::SetAllocator(c10::DeviceType::PrivateUse1, &g_allocator);
+ 
+    // Check if hardware mode is requested
+    const char* hw_env = getenv("VERIGPU_USE_HW");
+    if (hw_env && std::string(hw_env) == "1") {
+#ifdef VERIGPU_HW_AVAILABLE
+        g_hw_mode = true;
+        gpuCreateContext();
+        fprintf(stderr, "[VeriGPU] Hardware mode ENABLED (Verilator simulation active)\n");
+#else
+        fprintf(stderr, "[VeriGPU] WARNING: VERIGPU_USE_HW=1 but extension was built without HW support.\n");
+        fprintf(stderr, "[VeriGPU]   Build libverigpu_runtime.so first, then rebuild the extension.\n");
+        fprintf(stderr, "[VeriGPU]   Falling back to host-CPU mode.\n");
+#endif
+    }
+ 
     return true;
 }();
 
@@ -935,4 +965,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("is_available", []() -> bool { return true; });
     m.def("device_count", []() -> int { return 1; });
     m.def("current_device", []() -> int { return 0; });
+    m.def("is_hw_mode", []() -> bool { return g_hw_mode; });
+    m.def("hw_available", []() -> bool {
+#ifdef VERIGPU_HW_AVAILABLE
+        return true;
+#else
+        return false;
+#endif
+    });
 }
