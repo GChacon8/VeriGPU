@@ -13,6 +13,7 @@
 #include <functional>
 #include <vector>
 #include <numeric>
+#include <unordered_map>
 
 // --- HW mode: Verilator runtime integration (CP-4 HW Roadmap) ---
 // We forward-declare the runtime functions instead of #including
@@ -29,14 +30,47 @@ extern void gpuSetBaseThreadId(uint32_t base);
  
 static bool g_hw_mode = false;
 
+// Maps host pointers to GPU memory addresses
+static std::unordered_map<void*, uint32_t> g_host_to_gpu;
+
+static void sync_to_gpu(void* host_ptr, size_t nbytes) {
+    if (!g_hw_mode || nbytes == 0) return;
+    auto it = g_host_to_gpu.find(host_ptr);
+    if (it != g_host_to_gpu.end()) {
+        gpuCopyToDevice(reinterpret_cast<void*>(static_cast<size_t>(it->second)),
+                        host_ptr, nbytes);
+    }
+}
+
+static void sync_from_gpu(void* host_ptr, size_t nbytes) {
+    if (!g_hw_mode || nbytes == 0) return;
+    auto it = g_host_to_gpu.find(host_ptr);
+    if (it != g_host_to_gpu.end()) {
+        gpuCopyFromDevice(host_ptr,
+                          reinterpret_cast<void*>(static_cast<size_t>(it->second)),
+                          nbytes);
+    }
+}
+
+static uint32_t get_gpu_addr(void* host_ptr) {
+    auto it = g_host_to_gpu.find(host_ptr);
+    return (it != g_host_to_gpu.end()) ? it->second : 0;
+}
+
 namespace {
 
 // =====================================================================
 // 1. ALLOCATOR
 // =====================================================================
 
-static void verigpu_delete(void* ptr) { free(ptr); }
-
+static void verigpu_delete(void* ptr) {
+    if (ptr) {
+        // Remove from GPU address map
+        g_host_to_gpu.erase(ptr);
+        free(ptr);
+    }
+}
+ 
 struct VeriGPUAllocator final : public c10::Allocator {
     at::DataPtr allocate(size_t nbytes) override {
         void* data = nullptr;
@@ -44,6 +78,13 @@ struct VeriGPUAllocator final : public c10::Allocator {
             data = malloc(nbytes);
             TORCH_CHECK(data, "VeriGPU: alloc failed for ", nbytes, " bytes");
             memset(data, 0, nbytes);
+ 
+            // In HW mode: also allocate on GPU and track the mapping
+            if (g_hw_mode) {
+                uint32_t gpu_addr = static_cast<uint32_t>(
+                    reinterpret_cast<size_t>(gpuMalloc(static_cast<uint32_t>(nbytes))));
+                g_host_to_gpu[data] = gpu_addr;
+            }
         }
         return {data, data, &verigpu_delete,
                 at::Device(at::DeviceType::PrivateUse1, 0)};
@@ -321,6 +362,7 @@ at::Tensor& verigpu_copy_(at::Tensor& self, const at::Tensor& src, bool) {
         // Non-contiguous source: direct stride-aware copy, no recursion
         strided_copy_to_contiguous(self.data_ptr(), src);
     }
+    sync_to_gpu(self.data_ptr(), self.nbytes());
     return self;
 }
 
@@ -356,11 +398,13 @@ at::Tensor& verigpu_fill_scalar(at::Tensor& self, const at::Scalar& value) {
     else if (dtype == at::ScalarType::Long)   { int64_t v=value.toLong();  for(int64_t i=0;i<n;i++) static_cast<int64_t*>(ptr)[i]=v; }
     else if (dtype == at::ScalarType::Bool)   { bool v=value.toBool();     for(int64_t i=0;i<n;i++) static_cast<bool*>(ptr)[i]=v; }
     else { auto cpu=self.to(at::kCPU); cpu.fill_(value); memcpy(ptr,cpu.data_ptr(),self.nbytes()); }
+    sync_to_gpu(self.data_ptr(), self.nbytes());
     return self;
 }
 
 at::Tensor& verigpu_zero_(at::Tensor& self) {
     if (self.nbytes() > 0) memset(self.data_ptr(), 0, self.nbytes());
+    sync_to_gpu(self.data_ptr(), self.nbytes());
     return self;
 }
 
@@ -972,5 +1016,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 #else
         return false;
 #endif
+    });
+
+    m.def("gpu_addr_of", [](const at::Tensor& t) -> int64_t {
+        if (!g_hw_mode) return -1;
+        auto it = g_host_to_gpu.find(t.data_ptr());
+        if (it != g_host_to_gpu.end()) return static_cast<int64_t>(it->second);
+        return -1;
+    });
+ 
+    m.def("gpu_readback_floats", [](int64_t gpu_addr, int64_t count) -> std::vector<float> {
+        std::vector<float> result(count);
+        if (g_hw_mode && gpu_addr >= 0) {
+            gpuCopyFromDevice(result.data(),
+                              reinterpret_cast<void*>(static_cast<size_t>(gpu_addr)),
+                              count * sizeof(float));
+        }
+        return result;
     });
 }
