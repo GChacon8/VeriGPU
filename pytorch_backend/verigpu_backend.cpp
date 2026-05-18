@@ -443,6 +443,9 @@ at::Tensor verigpu_add_tensor(const at::Tensor& self, const at::Tensor& other, c
     if (g_hw_mode && dtype == at::ScalarType::Float && alpha.toFloat() == 1.0f
         && !b_scalar && g_kernel_addrs.count("vadd_f32"))
     {
+        sync_to_gpu(a.data_ptr(), a.nbytes());
+        sync_to_gpu(b.data_ptr(), b.nbytes());
+
         uint32_t ga   = get_gpu_addr(a.data_ptr());
         uint32_t gb   = get_gpu_addr(b.data_ptr());
         uint32_t gout = get_gpu_addr(output.data_ptr());
@@ -493,6 +496,8 @@ at::Tensor verigpu_sub_tensor(const at::Tensor& self, const at::Tensor& other, c
     if (g_hw_mode && dtype == at::ScalarType::Float && alpha.toFloat() == 1.0f
         && !b_scalar && g_kernel_addrs.count("vsub_f32"))
     {
+        sync_to_gpu(a.data_ptr(), a.nbytes());
+        sync_to_gpu(b.data_ptr(), b.nbytes());
         uint32_t ga   = get_gpu_addr(a.data_ptr());
         uint32_t gb   = get_gpu_addr(b.data_ptr());
         uint32_t gout = get_gpu_addr(output.data_ptr());
@@ -545,6 +550,8 @@ at::Tensor verigpu_mul_tensor(const at::Tensor& s, const at::Tensor& o) {
         if (b.dim() != 0 && a.sizes() == b.sizes()) {
             auto output = make_output_like(a);
             auto n = a.numel();
+            sync_to_gpu(a.data_ptr(), a.nbytes());
+            sync_to_gpu(b.data_ptr(), b.nbytes());
             uint32_t ga   = get_gpu_addr(a.data_ptr());
             uint32_t gb   = get_gpu_addr(b.data_ptr());
             uint32_t gout = get_gpu_addr(output.data_ptr());
@@ -612,6 +619,7 @@ at::Tensor verigpu_neg(const at::Tensor& s) {
         auto a = s.contiguous();
         auto output = make_output_like(a);
         auto n = a.numel();
+        sync_to_gpu(a.data_ptr(), a.nbytes());
         uint32_t ga   = get_gpu_addr(a.data_ptr());
         uint32_t gout = get_gpu_addr(output.data_ptr());
         write_kernel_params({ga, gout, static_cast<uint32_t>(n)});
@@ -632,6 +640,7 @@ at::Tensor verigpu_abs(const at::Tensor& s) {
         auto a = s.contiguous();
         auto output = make_output_like(a);
         auto n = a.numel();
+        sync_to_gpu(a.data_ptr(), a.nbytes());
         uint32_t ga   = get_gpu_addr(a.data_ptr());
         uint32_t gout = get_gpu_addr(output.data_ptr());
         write_kernel_params({ga, gout, static_cast<uint32_t>(n)});
@@ -652,6 +661,7 @@ at::Tensor verigpu_relu(const at::Tensor& s) {
         auto a = s.contiguous();
         auto output = make_output_like(a);
         auto n = a.numel();
+        sync_to_gpu(a.data_ptr(), a.nbytes());
         uint32_t ga   = get_gpu_addr(a.data_ptr());
         uint32_t gout = get_gpu_addr(output.data_ptr());
         write_kernel_params({ga, gout, static_cast<uint32_t>(n)});
