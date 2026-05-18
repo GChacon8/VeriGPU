@@ -57,6 +57,30 @@ static uint32_t get_gpu_addr(void* host_ptr) {
     return (it != g_host_to_gpu.end()) ? it->second : 0;
 }
 
+// ── Kernel infrastructure
+static std::unordered_map<std::string, uint32_t> g_kernel_addrs;
+static const uint32_t PARAM_BLOCK_ADDR = 0;
+
+static void write_kernel_params(const std::vector<uint32_t>& params) {
+    gpuCopyToDevice(
+        reinterpret_cast<void*>(static_cast<size_t>(PARAM_BLOCK_ADDR)),
+        params.data(),
+        params.size() * sizeof(uint32_t));
+}
+
+static void launch_kernel(const std::string& name, uint32_t total_threads) {
+    auto it = g_kernel_addrs.find(name);
+    TORCH_CHECK(it != g_kernel_addrs.end(),
+        "VeriGPU HW: kernel '", name, "' not loaded");
+    uint32_t kernel_addr = it->second;
+    for (uint32_t batch = 0; batch < total_threads; batch += 4) {
+        gpuSetBaseThreadId(batch);
+        gpuLaunchKernel(
+            reinterpret_cast<void*>(static_cast<size_t>(kernel_addr)),
+            0, nullptr);
+    }
+}   
+
 namespace {
 
 // =====================================================================
@@ -415,6 +439,21 @@ at::Tensor& verigpu_zero_(at::Tensor& self) {
 at::Tensor verigpu_add_tensor(const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
     auto [a, b, b_scalar] = prepare_binary(self, other);
     auto output = make_output_like(a); auto n = a.numel(); auto dtype = a.scalar_type();
+
+    if (g_hw_mode && dtype == at::ScalarType::Float && alpha.toFloat() == 1.0f
+        && !b_scalar && g_kernel_addrs.count("vadd_f32"))
+    {
+        uint32_t ga   = get_gpu_addr(a.data_ptr());
+        uint32_t gb   = get_gpu_addr(b.data_ptr());
+        uint32_t gout = get_gpu_addr(output.data_ptr());
+
+        write_kernel_params({ga, gb, gout, static_cast<uint32_t>(n)});
+        launch_kernel("vadd_f32", static_cast<uint32_t>(n));
+        sync_from_gpu(output.data_ptr(), output.nbytes());
+
+        return output;
+    }
+
     #define VERIGPU_ADD_LOOP(T) { const T* pa=a.data_ptr<T>(); const T* pb=b.data_ptr<T>(); T* po=output.data_ptr<T>(); \
         T av=alpha.to<T>(); T bv=b_scalar?pb[0]:T(0); for(int64_t i=0;i<n;i++) po[i]=pa[i]+av*(b_scalar?bv:pb[i]); }
     if      (dtype == at::ScalarType::Float)  VERIGPU_ADD_LOOP(float)
@@ -450,6 +489,19 @@ at::Tensor verigpu_add_scalar(const at::Tensor& self, const at::Scalar& other, c
 at::Tensor verigpu_sub_tensor(const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
     auto [a, b, b_scalar] = prepare_binary(self, other);
     auto output = make_output_like(a); auto n = a.numel(); auto dtype = a.scalar_type();
+
+    if (g_hw_mode && dtype == at::ScalarType::Float && alpha.toFloat() == 1.0f
+        && !b_scalar && g_kernel_addrs.count("vsub_f32"))
+    {
+        uint32_t ga   = get_gpu_addr(a.data_ptr());
+        uint32_t gb   = get_gpu_addr(b.data_ptr());
+        uint32_t gout = get_gpu_addr(output.data_ptr());
+        write_kernel_params({ga, gb, gout, static_cast<uint32_t>(n)});
+        launch_kernel("vsub_f32", static_cast<uint32_t>(n));
+        sync_from_gpu(output.data_ptr(), output.nbytes());
+        return output;
+    }
+
     #define VERIGPU_SUB_LOOP(T) { const T* pa=a.data_ptr<T>(); const T* pb=b.data_ptr<T>(); T* po=output.data_ptr<T>(); \
         T av=alpha.to<T>(); T bv=b_scalar?pb[0]:T(0); for(int64_t i=0;i<n;i++) po[i]=pa[i]-av*(b_scalar?bv:pb[i]); }
     if      (dtype == at::ScalarType::Float)  VERIGPU_SUB_LOOP(float)
@@ -482,10 +534,35 @@ at::Tensor verigpu_sub_scalar(const at::Tensor& self, const at::Scalar& other, c
 // 7. MUL 
 // =====================================================================
 
-at::Tensor verigpu_mul_tensor(const at::Tensor& self, const at::Tensor& other) {
-    return binary_op(self, other, [](auto a, auto b){ return a*b; }); }
+at::Tensor verigpu_mul_tensor(const at::Tensor& s, const at::Tensor& o) {
+    // HW MODE
+    if (g_hw_mode && s.scalar_type() == at::ScalarType::Float
+        && g_kernel_addrs.count("vmul_f32"))
+    {
+        auto a = s.contiguous();
+        auto b = o.contiguous();
+        if (b.dim() == 0 && b.scalar_type() != a.scalar_type()) b = b.to(a.scalar_type());
+        if (b.dim() != 0 && a.sizes() == b.sizes()) {
+            auto output = make_output_like(a);
+            auto n = a.numel();
+            uint32_t ga   = get_gpu_addr(a.data_ptr());
+            uint32_t gb   = get_gpu_addr(b.data_ptr());
+            uint32_t gout = get_gpu_addr(output.data_ptr());
+            write_kernel_params({ga, gb, gout, static_cast<uint32_t>(n)});
+            launch_kernel("vmul_f32", static_cast<uint32_t>(n));
+            sync_from_gpu(output.data_ptr(), output.nbytes());
+            return output;
+        }
+    }
+    // HOST FALLBACK
+    return binary_op(s, o, [](auto a, auto b){ return a*b; });
+}
+
+
 at::Tensor& verigpu_mul_tensor_(at::Tensor& self, const at::Tensor& other) {
     return binary_op_inplace(self, other, [](auto a, auto b){ return a*b; }); }
+
+
 at::Tensor verigpu_mul_scalar(const at::Tensor& self, const at::Scalar& other) {
     return unary_op(self, [v=other.toDouble()](auto x){ return decltype(x)(x*v); }); }
 
@@ -493,8 +570,31 @@ at::Tensor verigpu_mul_scalar(const at::Tensor& self, const at::Scalar& other) {
 // 8. DIV
 // =====================================================================
 
-at::Tensor verigpu_div_tensor(const at::Tensor& self, const at::Tensor& other) {
-    return binary_op(self, other, [](auto a, auto b){ return a/b; }); }
+at::Tensor verigpu_div_tensor(const at::Tensor& s, const at::Tensor& o) {
+    // HW MODE
+    if (g_hw_mode && s.scalar_type() == at::ScalarType::Float
+        && g_kernel_addrs.count("vdiv_f32"))
+    {
+        auto a = s.contiguous();
+        auto b = o.contiguous();
+        if (b.dim() == 0 && b.scalar_type() != a.scalar_type()) b = b.to(a.scalar_type());
+        if (b.dim() != 0 && a.sizes() == b.sizes()) {
+            auto output = make_output_like(a);
+            auto n = a.numel();
+            uint32_t ga   = get_gpu_addr(a.data_ptr());
+            uint32_t gb   = get_gpu_addr(b.data_ptr());
+            uint32_t gout = get_gpu_addr(output.data_ptr());
+            write_kernel_params({ga, gb, gout, static_cast<uint32_t>(n)});
+            launch_kernel("vdiv_f32", static_cast<uint32_t>(n));
+            sync_from_gpu(output.data_ptr(), output.nbytes());
+            return output;
+        }
+    }
+    // HOST FALLBACK
+    return binary_op(s, o, [](auto a, auto b){ return a/b; });
+}
+
+    
 at::Tensor& verigpu_div_tensor_(at::Tensor& self, const at::Tensor& other) {
     return binary_op_inplace(self, other, [](auto a, auto b){ return a/b; }); }
 at::Tensor verigpu_div_scalar(const at::Tensor& self, const at::Scalar& other) {
@@ -504,12 +604,66 @@ at::Tensor verigpu_div_scalar(const at::Tensor& self, const at::Scalar& other) {
 // 9. UNARY OPS
 // =====================================================================
 
-at::Tensor verigpu_neg(const at::Tensor& self) {
-    return unary_op(self, [](auto x){ return -x; }); }
-at::Tensor verigpu_abs(const at::Tensor& self) {
-    return unary_op(self, [](auto x){ return x<0?-x:x; }); }
-at::Tensor verigpu_relu(const at::Tensor& self) {
-    return unary_op(self, [](auto x){ return x>0?x:decltype(x)(0); }); }
+at::Tensor verigpu_neg(const at::Tensor& s) {
+    // HW MODE (unary: 3 params)
+    if (g_hw_mode && s.scalar_type() == at::ScalarType::Float
+        && g_kernel_addrs.count("vneg_f32"))
+    {
+        auto a = s.contiguous();
+        auto output = make_output_like(a);
+        auto n = a.numel();
+        uint32_t ga   = get_gpu_addr(a.data_ptr());
+        uint32_t gout = get_gpu_addr(output.data_ptr());
+        write_kernel_params({ga, gout, static_cast<uint32_t>(n)});
+        launch_kernel("vneg_f32", static_cast<uint32_t>(n));
+        sync_from_gpu(output.data_ptr(), output.nbytes());
+        return output;
+    }
+    // HOST FALLBACK
+    return unary_op(s, [](auto x){ return -x; });
+}
+
+
+at::Tensor verigpu_abs(const at::Tensor& s) {
+    // HW MODE (unary: 3 params)
+    if (g_hw_mode && s.scalar_type() == at::ScalarType::Float
+        && g_kernel_addrs.count("vabs_f32"))
+    {
+        auto a = s.contiguous();
+        auto output = make_output_like(a);
+        auto n = a.numel();
+        uint32_t ga   = get_gpu_addr(a.data_ptr());
+        uint32_t gout = get_gpu_addr(output.data_ptr());
+        write_kernel_params({ga, gout, static_cast<uint32_t>(n)});
+        launch_kernel("vabs_f32", static_cast<uint32_t>(n));
+        sync_from_gpu(output.data_ptr(), output.nbytes());
+        return output;
+    }
+    // HOST FALLBACK
+    return unary_op(s, [](auto x){ return x<0?-x:x; });
+}
+
+
+at::Tensor verigpu_relu(const at::Tensor& s) {
+    // HW MODE (unary: 3 params)
+    if (g_hw_mode && s.scalar_type() == at::ScalarType::Float
+        && g_kernel_addrs.count("vrelu_f32"))
+    {
+        auto a = s.contiguous();
+        auto output = make_output_like(a);
+        auto n = a.numel();
+        uint32_t ga   = get_gpu_addr(a.data_ptr());
+        uint32_t gout = get_gpu_addr(output.data_ptr());
+        write_kernel_params({ga, gout, static_cast<uint32_t>(n)});
+        launch_kernel("vrelu_f32", static_cast<uint32_t>(n));
+        sync_from_gpu(output.data_ptr(), output.nbytes());
+        return output;
+    }
+    // HOST FALLBACK
+    return unary_op(s, [](auto x){ return x>0?x:decltype(x)(0); });
+}
+
+
 at::Tensor& verigpu_relu_(at::Tensor& self) {
     auto n=self.numel(); auto dtype=self.scalar_type();
     if (dtype==at::ScalarType::Float) { float* p=self.data_ptr<float>(); for(int64_t i=0;i<n;i++) if(p[i]<0)p[i]=0; }
@@ -558,6 +712,25 @@ at::Tensor verigpu_sum(const at::Tensor& self, std::optional<at::ScalarType> dty
     auto out_dtype = dtype_opt.value_or(a.scalar_type());
     auto output = make_verigpu_contiguous({}, out_dtype);  // 0-dim tensor
     auto n = a.numel();
+
+    if (g_hw_mode && a.scalar_type() == at::ScalarType::Float
+        && g_kernel_addrs.count("vsum_f32"))
+    {
+        sync_to_gpu(a.data_ptr(), a.nbytes());
+ 
+        // Create scalar output tensor on device
+        auto output = torch::zeros({}, at::TensorOptions()
+            .dtype(at::ScalarType::Float).device(a.device()));
+ 
+        uint32_t ga   = get_gpu_addr(a.data_ptr());
+        uint32_t gout = get_gpu_addr(output.data_ptr());
+ 
+        write_kernel_params({ga, gout, static_cast<uint32_t>(a.numel())});
+        launch_kernel("vsum_f32", 4);  // REVISAR ESTO, NO ESTOY SEGUROOOOOOOOOOOOOOOOOO
+        sync_from_gpu(output.data_ptr(), output.nbytes());
+ 
+        return output;
+    }
 
     if (a.scalar_type() == at::ScalarType::Float) {
         const float* pa = a.data_ptr<float>();
@@ -650,6 +823,7 @@ at::Tensor verigpu_sum_dim(const at::Tensor& self,
 at::Tensor verigpu_mean(const at::Tensor& self, std::optional<at::ScalarType> dtype_opt) {
     auto s = verigpu_sum(self, dtype_opt);
     auto n = self.numel();
+
     if (s.scalar_type() == at::ScalarType::Float)
         *s.data_ptr<float>() /= n;
     else if (s.scalar_type() == at::ScalarType::Double)
@@ -699,6 +873,31 @@ at::Tensor verigpu_mm(const at::Tensor& self, const at::Tensor& mat2) {
     auto output = make_verigpu_contiguous({M, N}, a.scalar_type());
 
     auto dtype = a.scalar_type();
+
+    if (g_hw_mode && a.scalar_type() == at::ScalarType::Float
+        && g_kernel_addrs.count("vmm_f32"))
+    {
+        sync_to_gpu(a.data_ptr(), a.nbytes());
+        sync_to_gpu(b.data_ptr(), b.nbytes());
+ 
+        uint32_t ga   = get_gpu_addr(a.data_ptr());
+        uint32_t gb   = get_gpu_addr(b.data_ptr());
+        uint32_t gc   = get_gpu_addr(output.data_ptr());
+ 
+        // 6 parameters: addr_A, addr_B, addr_C, M, K, N
+        write_kernel_params({ga, gb, gc,
+            static_cast<uint32_t>(M),
+            static_cast<uint32_t>(K),
+            static_cast<uint32_t>(N)});
+ 
+        // Each thread computes one row of C. With 4 cores,
+        // M rows need ceil(M/4) batches.
+        launch_kernel("vmm_f32", static_cast<uint32_t>(M));
+ 
+        sync_from_gpu(output.data_ptr(), output.nbytes());
+        return output;
+    }
+
     if (dtype == at::ScalarType::Float) {
         const float* pa = a.data_ptr<float>();
         const float* pb = b.data_ptr<float>();
@@ -905,6 +1104,27 @@ at::Tensor verigpu_threshold_backward(const at::Tensor& grad_output,
     auto n = g.numel();
     auto dtype = g.scalar_type();
 
+    if (g_hw_mode && grad_output.scalar_type() == at::ScalarType::Float
+        && threshold.toFloat() == 0.0f
+        && g_kernel_addrs.count("vthreshold_bwd_f32"))
+    {
+        auto grad = grad_output.contiguous();
+        auto inp  = self.contiguous();
+        auto output = make_output_like(grad);
+        auto n = grad.numel();
+
+        sync_to_gpu(grad.data_ptr(), grad.nbytes());
+        sync_to_gpu(inp.data_ptr(), inp.nbytes());
+
+        uint32_t g_grad = get_gpu_addr(grad.data_ptr());
+        uint32_t g_inp  = get_gpu_addr(inp.data_ptr());
+        uint32_t g_out  = get_gpu_addr(output.data_ptr());
+        write_kernel_params({g_grad, g_inp, g_out, static_cast<uint32_t>(n)});
+        launch_kernel("vthreshold_bwd_f32", static_cast<uint32_t>(n));
+        sync_from_gpu(output.data_ptr(), output.nbytes());
+        return output;
+    }
+
     if (dtype == at::ScalarType::Float) {
         const float* pg = g.data_ptr<float>();
         const float* ps = s.data_ptr<float>();
@@ -1033,5 +1253,25 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                               count * sizeof(float));
         }
         return result;
+    });
+
+    m.def("load_kernel", [](const std::string& name, std::vector<uint32_t> words) {
+        if (!g_hw_mode)
+            throw std::runtime_error("Cannot load kernel: HW mode not active");
+        uint32_t size_bytes = words.size() * sizeof(uint32_t);
+        uint32_t addr = static_cast<uint32_t>(
+            reinterpret_cast<size_t>(gpuMalloc(size_bytes)));
+        gpuCopyToDevice(
+            reinterpret_cast<void*>(static_cast<size_t>(addr)),
+            words.data(), size_bytes);
+        g_kernel_addrs[name] = addr;
+        fprintf(stderr, "[VeriGPU] Loaded kernel '%s' (%zu instructions) at GPU addr %u\n",
+                name.c_str(), words.size(), addr);
+    });
+
+    m.def("list_kernels", []() -> std::vector<std::string> {
+        std::vector<std::string> names;
+        for (auto& kv : g_kernel_addrs) names.push_back(kv.first);
+        return names;
     });
 }

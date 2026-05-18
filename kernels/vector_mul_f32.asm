@@ -1,0 +1,18 @@
+# vector_mul_f32.asm — out[tid] = a[tid] * b[tid]
+# Params at addr 0: [addr_a, addr_b, addr_out, n]
+
+lw a0, 0(x0)
+lw a1, 4(x0)
+lw a2, 8(x0)
+lw a3, 12(x0)
+bge x5, a3, done
+slli x6, x5, 2
+add x7, a0, x6
+lw x8, 0(x7)
+add x7, a1, x6
+lw x9, 0(x7)
+fmul.s x10, x8, x9
+add x7, a2, x6
+sw x10, 0(x7)
+done:
+halt
