@@ -276,6 +276,7 @@ static at::Tensor binary_op(const at::Tensor& self, const at::Tensor& other, F o
     else if (dtype == at::ScalarType::Long)   VERIGPU_BINARY_LOOP(int64_t)
     else TORCH_CHECK(false, "VeriGPU: unsupported dtype ", dtype);
     #undef VERIGPU_BINARY_LOOP
+    sync_to_gpu(output.data_ptr(), output.nbytes());
     return output;
 }
 
@@ -296,6 +297,7 @@ static at::Tensor& binary_op_inplace(at::Tensor& self, const at::Tensor& other, 
     else if (dtype == at::ScalarType::Long)   VERIGPU_INPLACE_LOOP(int64_t)
     else TORCH_CHECK(false, "VeriGPU: unsupported dtype ", dtype);
     #undef VERIGPU_INPLACE_LOOP
+    sync_to_gpu(self.data_ptr(), self.nbytes());
     return self;
 }
 
@@ -314,6 +316,7 @@ static at::Tensor unary_op(const at::Tensor& self, F op) {
     else if (dtype == at::ScalarType::Long)   VERIGPU_UNARY_LOOP(int64_t)
     else TORCH_CHECK(false, "VeriGPU: unsupported dtype ", dtype);
     #undef VERIGPU_UNARY_LOOP
+    sync_to_gpu(output.data_ptr(), output.nbytes());
     return output;
 }
 
