@@ -11,7 +11,7 @@
 
 #include "gpu_runtime.h"
 
-#define MAX_SIM_TIME 5000000
+#define MAX_SIM_TIME 500000000
 // #define MAX_SIM_TIME 250
 vluint64_t sim_time = 0;
 // yes we need to move to 64-bits soonish...
@@ -153,7 +153,6 @@ void gpuCopyToDevice(void *gpuMemPtr, const void *srcData, size_t numBytes)
 
 void gpuCopyFromDevice(void *destData, const void *gpuMemPtr, size_t numBytes)
 {
-    // std::cout << "gpuCopyFromDevice our addr " << destData << " theirs " << gpuMemPtr << " numBytes " << numBytes << std::endl;
     dut->cpu_recv_instr = COPY_FROM_GPU;
     tick();
 
@@ -166,24 +165,22 @@ void gpuCopyFromDevice(void *destData, const void *gpuMemPtr, size_t numBytes)
     dut->cpu_recv_instr = NOP;
     uint32_t *destDataWords = (uint32_t *)destData;
     long numWords = numBytes >> 2;
-    // std::cout << "gpuCopyFromDevice numWords=" << numWords << " sim_time=" << sim_time << std::endl;
     long i = 0;
-    while(i < numWords && sim_time < MAX_SIM_TIME) {
-        // std::cout << "gpuCopyFromDevice i=" << i << " sim_time=" << sim_time << std::endl;
+    vluint64_t start_time = sim_time;                       
+    while (i < numWords && sim_time < MAX_SIM_TIME) {
         if (dut->cpu_out_ack) {
             destDataWords[i] = dut->cpu_out_data;
-            // std::cout << "gpuCopyFromDevice received word " << i << " which is " << destDataWords[i] << std::endl;
             i++;
         }
         tick();
     }
-    // for (long i = 0; i < numWords; i++)
-    // {
-    //     tick();
-    //     destDataWords[i] = dut->cpu_out_data;
-    //     std::cout << "received word " << i << " which is " << destDataWords[i] << std::endl;
-    // }
-    // std::cout << "hopefully received data from GPU" << std::endl;
+    if (i < numWords) {                                     
+        std::cerr << "[VeriGPU] FATAL: gpuCopyFromDevice timed out after "
+                  << (sim_time - start_time) << " ticks. Got "
+                  << i << "/" << numWords << " words. sim_time=" << sim_time
+                  << " (MAX_SIM_TIME=" << MAX_SIM_TIME << ")" << std::endl;
+        std::abort();
+    }
 }
 
 void gpuLaunchKernel(const void *kernelPos, uint32_t numParams, const uint32_t *const p_params)
@@ -197,16 +194,35 @@ void gpuLaunchKernel(const void *kernelPos, uint32_t numParams, const uint32_t *
     dut->cpu_in_data = numParams;
     tick();
 
-    for(int i = 0; i < numParams; i++) {
+    for (int i = 0; i < numParams; i++) {
         dut->cpu_in_data = p_params[i];
         tick();
     }
     dut->cpu_recv_instr = NOP;
 
+    vluint64_t start_time = sim_time;                       // ← NUEVO
+    const vluint64_t KERNEL_TIMEOUT_TICKS = 10000000;       // ← NUEVO (10M sim_time = 1M clock ticks)
     while (!dut->cpu_out_ack)
     {
-        // std::cout << "gpu_runtime.cpp awaiting cpu_out_ack" << std::endl;
         tick();
+        if (sim_time - start_time > KERNEL_TIMEOUT_TICKS) { // ← NUEVO bloque
+            std::cerr << "[VeriGPU] FATAL: gpuLaunchKernel timed out after "
+                      << (sim_time - start_time) << " ticks waiting for cpu_out_ack. "
+                      << "kernelPos=" << (size_t)kernelPos
+                      << " sim_time=" << sim_time << std::endl;
+            std::abort();
+        }
     }
-    // std::cout << "gpu_runtime.cpp gpuLaunchKernel kernel finished" << std::endl;
+}
+
+void gpuFree(void *ptr) {
+    size_t pos = (size_t)ptr;
+    for (auto it = usedSpaces.begin(); it != usedSpaces.end(); ++it) {
+        if ((*it)->pos == pos) {
+            MemoryInfo *mi = *it;
+            usedSpaces.erase(it);
+            freeSpaces.insert(mi);   // devolver al pool
+            return;
+        }
+    }
 }

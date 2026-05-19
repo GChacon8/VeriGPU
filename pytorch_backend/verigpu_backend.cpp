@@ -21,6 +21,7 @@
 #ifdef VERIGPU_HW_AVAILABLE
 extern void gpuCreateContext();
 extern void* gpuMalloc(uint32_t requestedBytes);
+extern void gpuFree(void* ptr);
 extern void gpuCopyToDevice(void* gpuMemPtr, const void* srcData, size_t numBytes);
 extern void gpuCopyFromDevice(void* destData, const void* gpuMemPtr, size_t numBytes);
 extern void gpuLaunchKernel(const void* kernelPos, uint32_t numParams, const uint32_t* const p_params);
@@ -84,12 +85,15 @@ static void launch_kernel(const std::string& name, uint32_t total_threads) {
 namespace {
 
 // =====================================================================
-// 1. ALLOCATOR
+// ALLOCATOR: Manejo de memoria hacia y de la gpuu
 // =====================================================================
 
 static void verigpu_delete(void* ptr) {
     if (ptr) {
-        // Remove from GPU address map
+        auto it = g_host_to_gpu.find(ptr);
+        if (it != g_host_to_gpu.end() && g_hw_mode) {
+            gpuFree(reinterpret_cast<void*>(static_cast<size_t>(it->second)));
+        }
         g_host_to_gpu.erase(ptr);
         free(ptr);
     }
@@ -402,6 +406,9 @@ at::Tensor verigpu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool
         // Non-contiguous on our device: direct stride-aware copy to CPU dst
         strided_copy_to_contiguous(dst.data_ptr(), self);
     }
+    if (dst.device().type() == at::DeviceType::PrivateUse1) {
+        sync_to_gpu(dst.data_ptr(), dst.nbytes());
+    }
     return dst;
 }
 
@@ -591,6 +598,8 @@ at::Tensor verigpu_div_tensor(const at::Tensor& s, const at::Tensor& o) {
         if (b.dim() != 0 && a.sizes() == b.sizes()) {
             auto output = make_output_like(a);
             auto n = a.numel();
+            sync_to_gpu(a.data_ptr(), a.nbytes());
+            sync_to_gpu(b.data_ptr(), b.nbytes()); 
             uint32_t ga   = get_gpu_addr(a.data_ptr());
             uint32_t gb   = get_gpu_addr(b.data_ptr());
             uint32_t gout = get_gpu_addr(output.data_ptr());
@@ -1020,6 +1029,7 @@ static at::Tensor via_cpu(const at::Tensor& self,
     auto cpu_result = cpu_op(cpu_input).contiguous();
     auto out = make_verigpu_contiguous(cpu_result.sizes(), cpu_result.scalar_type());
     memcpy(out.data_ptr(), cpu_result.data_ptr(), cpu_result.nbytes());
+    sync_to_gpu(out.data_ptr(), out.nbytes());
     return out;
 }
 
