@@ -1,9 +1,4 @@
 // verigpu_backend.cpp — PyTorch custom backend for VeriGPU
-// CP-3: allocator, device guard, copy, empty, fill, zero
-// CP-4: add (Tensor, Scalar, in-place)
-// CP-5: sub, mul, div, neg, abs, relu, clamp + in-place variants
-// CP-6: sum, mean (full + dim), mm, addmm
-// CP-7: autograd ops — view ops, threshold_backward, _local_scalar_dense
 #include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <torch/extension.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
@@ -878,7 +873,6 @@ at::Tensor verigpu_mean_dim(const at::Tensor& self,
 {
     // Use CPU for dim reduction (same rationale as sum_dim)
     auto a = self.contiguous();
-    auto out_dtype = dtype_opt.value_or(a.scalar_type());
 
     auto cpu_result = a.cpu().mean(dim_opt, keepdim, dtype_opt);
 
@@ -916,7 +910,6 @@ at::Tensor verigpu_mm(const at::Tensor& self, const at::Tensor& mat2) {
     if (g_hw_mode && a.scalar_type() == at::ScalarType::Float
         && g_kernel_addrs.count("vmm_f32"))
     {
-        fprintf(stderr, "[MM] tomando path HW\n");
         sync_to_gpu(a.data_ptr(), a.nbytes());
         sync_to_gpu(b.data_ptr(), b.nbytes());
  
@@ -936,33 +929,9 @@ at::Tensor verigpu_mm(const at::Tensor& self, const at::Tensor& mat2) {
  
         sync_from_gpu(output.data_ptr(), output.nbytes());
         
-        {
-            void* dp = output.data_ptr();
-            size_t nb = output.nbytes();
-            fprintf(stderr, "[MM-DIAG] data_ptr=%p nbytes=%zu n_floats=%zu\n",
-            dp, nb, nb / sizeof(float));
-            char* base = static_cast<char*>(dp);
-            size_t n = nb / sizeof(float);
-            for (size_t i = 0; i < n; i++) {
-                uint32_t v;
-                std::memcpy(&v, base + i * sizeof(float), sizeof(uint32_t));
-                uint32_t e = (v >> 23) & 0xFF;
-                uint32_t m = v & 0x7FFFFF;
-                fprintf(stderr, "[MM-DIAG] pos %zu: bits=0x%08x exp=%u mant=0x%x %s\n",
-                    i, v, e, m, (e==0 && m!=0) ? "<-- SUBNORMAL" : "");
-                if (e == 0 && m != 0) {
-                    v = v & 0x80000000u;
-                    std::memcpy(base + i * sizeof(float), &v, sizeof(uint32_t));
-                    fprintf(stderr, "[MM-DIAG] pos %zu flushed -> 0x%08x\n", i, v);
-                }
-            }
-        }
-        fprintf(stderr, "[MM] HW done, output[0] bits=0x%08x\n",
-            *reinterpret_cast<uint32_t*>(output.data_ptr()));
         return output;
     }
 
-    fprintf(stderr, "[MM] tomando path HOST fallback\n");
     if (dtype == at::ScalarType::Float) {
         const float* pa = a.data_ptr<float>();
         const float* pb = b.data_ptr<float>();
@@ -997,8 +966,6 @@ at::Tensor verigpu_mm(const at::Tensor& self, const at::Tensor& mat2) {
 // =====================================================================
 // 13. ADDMM — bias + matmul: out = beta*self + alpha*(mat1 @ mat2)
 // =====================================================================
-// Used heavily by nn.Linear: output = input @ weight.T + bias
-// addmm(bias, input, weight, beta=1, alpha=1)
 
 at::Tensor verigpu_addmm(const at::Tensor& self, const at::Tensor& mat1,
     const at::Tensor& mat2, const at::Scalar& beta, const at::Scalar& alpha)
@@ -1060,7 +1027,7 @@ at::Tensor verigpu_addmm(const at::Tensor& self, const at::Tensor& mat1,
 }
 
 // =====================================================================
-// 15. VIA-CPU HELPER (CP-7)
+// 15. VIA-CPU HELPER
 // =====================================================================
 // Run an op on CPU and bring result back to our device.
 // Since our GPU memory IS host memory, this is just memcpy overhead.
@@ -1077,7 +1044,7 @@ static at::Tensor via_cpu(const at::Tensor& self,
 }
 
 // =====================================================================
-// 16. VIEW OPS (CP-7) — shared-storage operations for autograd
+// 16. VIEW OPS — shared-storage operations for autograd
 // =====================================================================
 // These create new tensor views or copies that autograd's backward
 // formulas need internally: transpose for mm backward, reshape for

@@ -11,7 +11,7 @@
 
 #include "gpu_runtime.h"
 
-#define MAX_SIM_TIME 500000000
+#define MAX_SIM_TIME 50000000000ULL
 // #define MAX_SIM_TIME 250
 vluint64_t sim_time = 0;
 // yes we need to move to 64-bits soonish...
@@ -201,8 +201,8 @@ void gpuLaunchKernel(const void *kernelPos, uint32_t numParams, const uint32_t *
     }
     dut->cpu_recv_instr = NOP;
 
-    vluint64_t start_time = sim_time;                       // ← NUEVO
-    const vluint64_t KERNEL_TIMEOUT_TICKS = 10000000;       // ← NUEVO (10M sim_time = 1M clock ticks)
+    vluint64_t start_time = sim_time;                       
+    const vluint64_t KERNEL_TIMEOUT_TICKS = 2000000000ULL;       //Por si el kernel se cuelga
     while (!dut->cpu_out_ack)
     {
         tick();
