@@ -34,10 +34,26 @@ static bool g_hw_mode = false;
 // Maps host pointers to GPU memory addresses
 static std::unordered_map<void*, uint32_t> g_host_to_gpu;
 
+// Flush denormales a cero. El pipeline FMUL del HW no los maneja bien,
+// y para ML son indistinguibles de cero.
+static void flush_denormals(void* host_ptr, size_t nbytes) {
+    size_t n = nbytes / sizeof(float);
+    char* base = static_cast<char*>(host_ptr);
+    for (size_t i = 0; i < n; i++) {
+        float f;
+        std::memcpy(&f, base + i * sizeof(float), sizeof(float));
+        if (f != 0.0f && std::fabs(f) < 1e-30f) {   // umbral generoso de ruido
+            f = 0.0f;
+            std::memcpy(base + i * sizeof(float), &f, sizeof(float));
+        }
+    }
+}
+
 static void sync_to_gpu(void* host_ptr, size_t nbytes) {
     if (!g_hw_mode || nbytes == 0) return;
     auto it = g_host_to_gpu.find(host_ptr);
     if (it != g_host_to_gpu.end()) {
+        flush_denormals(host_ptr, nbytes);
         gpuCopyToDevice(reinterpret_cast<void*>(static_cast<size_t>(it->second)),
                         host_ptr, nbytes);
     }
@@ -50,6 +66,7 @@ static void sync_from_gpu(void* host_ptr, size_t nbytes) {
         gpuCopyFromDevice(host_ptr,
                           reinterpret_cast<void*>(static_cast<size_t>(it->second)),
                           nbytes);
+        flush_denormals(host_ptr, nbytes);
     }
 }
 
@@ -899,6 +916,7 @@ at::Tensor verigpu_mm(const at::Tensor& self, const at::Tensor& mat2) {
     if (g_hw_mode && a.scalar_type() == at::ScalarType::Float
         && g_kernel_addrs.count("vmm_f32"))
     {
+        fprintf(stderr, "[MM] tomando path HW\n");
         sync_to_gpu(a.data_ptr(), a.nbytes());
         sync_to_gpu(b.data_ptr(), b.nbytes());
  
@@ -917,9 +935,34 @@ at::Tensor verigpu_mm(const at::Tensor& self, const at::Tensor& mat2) {
         launch_kernel("vmm_f32", static_cast<uint32_t>(M));
  
         sync_from_gpu(output.data_ptr(), output.nbytes());
+        
+        {
+            void* dp = output.data_ptr();
+            size_t nb = output.nbytes();
+            fprintf(stderr, "[MM-DIAG] data_ptr=%p nbytes=%zu n_floats=%zu\n",
+            dp, nb, nb / sizeof(float));
+            char* base = static_cast<char*>(dp);
+            size_t n = nb / sizeof(float);
+            for (size_t i = 0; i < n; i++) {
+                uint32_t v;
+                std::memcpy(&v, base + i * sizeof(float), sizeof(uint32_t));
+                uint32_t e = (v >> 23) & 0xFF;
+                uint32_t m = v & 0x7FFFFF;
+                fprintf(stderr, "[MM-DIAG] pos %zu: bits=0x%08x exp=%u mant=0x%x %s\n",
+                    i, v, e, m, (e==0 && m!=0) ? "<-- SUBNORMAL" : "");
+                if (e == 0 && m != 0) {
+                    v = v & 0x80000000u;
+                    std::memcpy(base + i * sizeof(float), &v, sizeof(uint32_t));
+                    fprintf(stderr, "[MM-DIAG] pos %zu flushed -> 0x%08x\n", i, v);
+                }
+            }
+        }
+        fprintf(stderr, "[MM] HW done, output[0] bits=0x%08x\n",
+            *reinterpret_cast<uint32_t*>(output.data_ptr()));
         return output;
     }
 
+    fprintf(stderr, "[MM] tomando path HOST fallback\n");
     if (dtype == at::ScalarType::Float) {
         const float* pa = a.data_ptr<float>();
         const float* pb = b.data_ptr<float>();

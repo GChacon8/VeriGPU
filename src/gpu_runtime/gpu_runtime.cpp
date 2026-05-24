@@ -116,6 +116,7 @@ void *gpuMalloc(uint32_t requestedBytes)
         // std::cout << "new spaces " << *freeSpace << " " << *secondSpace << std::endl;
         freeSpaces.erase(freeSpace);
         freeSpaces.insert(secondSpace);
+        freeSpace->size = requestedBytes;
         usedSpaces.insert(freeSpace);
         return (void *)freeSpace->pos;
     }

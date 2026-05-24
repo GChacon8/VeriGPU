@@ -20,7 +20,7 @@ runtime_lib = os.path.join(runtime_dir, 'libverigpu_runtime.so')
 
 hw_available = os.path.exists(runtime_lib)
 
-extra_compile_args = ['-std=c++17']
+extra_compile_args = ['-std=c++17', '-fno-strict-aliasing']
 extra_link_args = []
 libraries = []
 library_dirs = []
